@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
+    # Set REDIS_USERNAME for ACL-based auth (e.g. halo_app); leave unset to
+    # authenticate as the default user via requirepass.
+    REDIS_USERNAME: str | None = None
     REDIS_PASSWORD: str | None = None
 
     # Discovery / auto-registration pipeline. A "sighting" is one reporter
