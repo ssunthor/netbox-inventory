@@ -62,7 +62,8 @@ async def test_gtt_fetch_pagination_and_interface_ips():
     # _rebase must pull it back onto the configured scheme/host.
     respx.get("http://gtt.test/api/dcim/devices/").mock(side_effect=[
         Response(200, json=_page([DEVICE], "https://gtt.test/api/dcim/devices/?offset=1")),
-        Response(200, json=_page([{**DEVICE, "id": 13, "name": "fw02", "primary_ip4": None}])),
+        Response(200, json=_page([{**DEVICE, "id": 13, "name": "fw02", "primary_ip4": None,
+                                   "custom_fields": {"os_build": "None"}}])),
     ])
     respx.get("http://gtt.test/api/virtualization/virtual-machines/").mock(
         return_value=Response(200, json=_page([VM])))
@@ -80,6 +81,8 @@ async def test_gtt_fetch_pagination_and_interface_ips():
     fw01 = next(h for h in hosts if h["host_id"] == "device:12")
     assert sorted(fw01["ips"]) == ["10.250.47.10", "10.250.47.11"]
     assert fw01["os_version"] == "9.1.3"  # custom_fields.os_build, for CVE scans
+    fw02 = next(h for h in hosts if h["host_id"] == "device:13")
+    assert fw02["os_version"] is None  # literal "None" placeholder scrubbed
     vm = next(h for h in hosts if h["host_id"] == "vm:7")
     assert sorted(vm["ips"]) == ["10.250.47.20", "10.250.47.21"]
 

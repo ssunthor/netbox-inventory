@@ -40,6 +40,15 @@ def _bare_ip(address: str | None) -> str | None:
     return address.split("/")[0] if address else None
 
 
+def _clean_version(value) -> str | None:
+    """Normalize placeholder junk ('None', 'null', 'unknown', empty) to None
+    so downstream CVE queries never search for a literal 'FortiOS None'."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return None if not s or s.lower() in ("none", "null", "unknown", "n/a") else s
+
+
 def _normalize_device(d: dict) -> dict:
     primary = (d.get("primary_ip4") or d.get("primary_ip6") or {}).get("address")
     return {
@@ -58,7 +67,7 @@ def _normalize_device(d: dict) -> dict:
         "platform": (d.get("platform") or {}).get("name"),
         # os_build is the device-side OS version convention; consumed by the
         # halo backend's CVE scanner alongside platform.
-        "os_version": (d.get("custom_fields") or {}).get("os_build"),
+        "os_version": _clean_version((d.get("custom_fields") or {}).get("os_build")),
         "tags": [t.get("slug") for t in (d.get("tags") or [])],
         "ips": [ip for ip in [_bare_ip(primary)] if ip],
     }
@@ -77,7 +86,7 @@ def _normalize_vm(v: dict) -> dict:
         "status": (v.get("status") or {}).get("label"),
         "primary_ip": primary,
         "platform": (v.get("platform") or {}).get("name"),
-        "os_version": (v.get("custom_fields") or {}).get("os_version"),
+        "os_version": _clean_version((v.get("custom_fields") or {}).get("os_version")),
         "vcpus": v.get("vcpus"),
         "memory": v.get("memory"),
         "disk": v.get("disk"),
