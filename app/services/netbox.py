@@ -9,15 +9,30 @@ def _headers(token: str) -> dict:
     return {"Authorization": f"Token {token}", "Accept": "application/json"}
 
 
+def _rebase(next_url: str | None, base_url: str) -> str | None:
+    """NetBox behind a TLS-terminating proxy emits http:// pagination links;
+    force every "next" URL back onto the configured scheme/host/port."""
+    if not next_url:
+        return None
+    base = httpx.URL(base_url)
+    return str(httpx.URL(next_url).copy_with(
+        scheme=base.scheme, host=base.host, port=base.port or None))
+
+
 async def _fetch_all(client: httpx.AsyncClient, base_url: str, token: str, path: str) -> list:
-    """Follow NetBox pagination until exhausted. Raises on HTTP errors."""
+    """Follow NetBox pagination until exhausted. Raises on HTTP errors,
+    naming the exact URL that failed."""
     results, url = [], f"{base_url}{path}"
     while url:
-        resp = await client.get(url, headers=_headers(token))
+        try:
+            resp = await client.get(url, headers=_headers(token))
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"NetBox request failed for {url}: {type(exc).__name__}: {exc}") from exc
         resp.raise_for_status()
         payload = resp.json()
         results.extend(payload.get("results", []))
-        url = payload.get("next")
+        url = _rebase(payload.get("next"), base_url)
     return results
 
 

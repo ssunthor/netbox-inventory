@@ -26,10 +26,19 @@ VM = {
 }
 
 
+def test_rebase_forces_configured_scheme_and_host():
+    assert netbox._rebase("http://netbox.example.com/api/dcim/devices/?offset=50",
+                          "https://netbox.example.com") == \
+        "https://netbox.example.com/api/dcim/devices/?offset=50"
+    assert netbox._rebase(None, "https://netbox.example.com") is None
+
+
 @respx.mock
 async def test_gtt_fetch_pagination_and_interface_ips():
+    # Page 1's "next" link deliberately uses https while the base is http —
+    # _rebase must pull it back onto the configured scheme/host.
     respx.get("http://gtt.test/api/dcim/devices/").mock(side_effect=[
-        Response(200, json=_page([DEVICE], "http://gtt.test/api/dcim/devices/?offset=1")),
+        Response(200, json=_page([DEVICE], "https://gtt.test/api/dcim/devices/?offset=1")),
         Response(200, json=_page([{**DEVICE, "id": 13, "name": "fw02", "primary_ip4": None}])),
     ])
     respx.get("http://gtt.test/api/virtualization/virtual-machines/").mock(
