@@ -26,6 +26,22 @@ VM = {
 }
 
 
+@respx.mock
+async def test_gtt_tenant_scoping(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "GTT_NETBOX_TENANT_ID", 42)
+    devices = respx.get("http://gtt.test/api/dcim/devices/").mock(
+        return_value=Response(200, json=_page([])))
+    vms = respx.get("http://gtt.test/api/virtualization/virtual-machines/").mock(
+        return_value=Response(200, json=_page([])))
+    ips = respx.get("http://gtt.test/api/ipam/ip-addresses/").mock(
+        return_value=Response(200, json=_page([])))
+
+    await netbox.fetch_managed_hosts_from_gtt()
+    for route in (devices, vms, ips):
+        assert route.calls[0].request.url.params["tenant_id"] == "42"
+
+
 def test_rebase_forces_configured_scheme_and_host():
     assert netbox._rebase("http://netbox.example.com/api/dcim/devices/?offset=50",
                           "https://netbox.example.com") == \

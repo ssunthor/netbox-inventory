@@ -103,10 +103,16 @@ async def fetch_managed_hosts_from_gtt() -> list:
     can match telemetry hosts seen on any address."""
     base, token = settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN
     qp = settings.GTT_NETBOX_QUERY_PARAMS
+    ip_qp = "limit=0"
+    if settings.GTT_NETBOX_TENANT_ID:
+        qp = f"tenant_id={settings.GTT_NETBOX_TENANT_ID}&{qp}"
+        # Scopes to IPs tenanted in NetBox; untenanted interface IPs are
+        # missed here but primary IPs still arrive via the device records.
+        ip_qp = f"tenant_id={settings.GTT_NETBOX_TENANT_ID}&{ip_qp}"
     async with _client() as client:
         devices = await _fetch_all(client, base, token, f"/api/dcim/devices/?{qp}")
         vms = await _fetch_all(client, base, token, f"/api/virtualization/virtual-machines/?{qp}")
-        ip_addrs = await _fetch_all(client, base, token, "/api/ipam/ip-addresses/?limit=0")
+        ip_addrs = await _fetch_all(client, base, token, f"/api/ipam/ip-addresses/?{ip_qp}")
 
     hosts = [_normalize_device(d) for d in devices] + [_normalize_vm(v) for v in vms]
     by_key = {h["host_id"]: h for h in hosts}
