@@ -14,6 +14,7 @@ DEVICE = {
     "role": {"name": "Firewall"}, "site": {"name": "LON8"},
     "status": {"label": "Active"},
     "primary_ip4": {"address": "10.250.47.10/27"},
+    "custom_fields": {"os_build": "9.1.3"},
     "tags": [],
 }
 
@@ -78,6 +79,7 @@ async def test_gtt_fetch_pagination_and_interface_ips():
     assert len(hosts) == 3  # pagination followed: 2 devices + 1 vm
     fw01 = next(h for h in hosts if h["host_id"] == "device:12")
     assert sorted(fw01["ips"]) == ["10.250.47.10", "10.250.47.11"]
+    assert fw01["os_version"] == "9.1.3"  # custom_fields.os_build, for CVE scans
     vm = next(h for h in hosts if h["host_id"] == "vm:7")
     assert sorted(vm["ips"]) == ["10.250.47.20", "10.250.47.21"]
 

@@ -56,6 +56,9 @@ def _normalize_device(d: dict) -> dict:
         "primary_ip": primary,
         "serial": d.get("serial"),
         "platform": (d.get("platform") or {}).get("name"),
+        # os_build is the device-side OS version convention; consumed by the
+        # halo backend's CVE scanner alongside platform.
+        "os_version": (d.get("custom_fields") or {}).get("os_build"),
         "tags": [t.get("slug") for t in (d.get("tags") or [])],
         "ips": [ip for ip in [_bare_ip(primary)] if ip],
     }
@@ -74,6 +77,7 @@ def _normalize_vm(v: dict) -> dict:
         "status": (v.get("status") or {}).get("label"),
         "primary_ip": primary,
         "platform": (v.get("platform") or {}).get("name"),
+        "os_version": (v.get("custom_fields") or {}).get("os_version"),
         "vcpus": v.get("vcpus"),
         "memory": v.get("memory"),
         "disk": v.get("disk"),
