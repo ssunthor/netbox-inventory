@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     NETBOX_CUSTOMER_NAME: str
     NETBOX_TENANT_ID: int
     NETBOX_SYNC_INTERVAL: int = 86400
+    # Set false for dev/test NetBox instances with self-signed certificates.
+    # Applies to both the customer and GT-T NetBox clients.
+    NETBOX_VERIFY_SSL: bool = True
 
     # GT-T NetBox: read-only source of the managed-device list.
     GTT_NETBOX_URL: str

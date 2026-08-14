@@ -67,10 +67,14 @@ def _normalize_vm(v: dict) -> dict:
     }
 
 
+def _client(**kwargs) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL, **kwargs)
+
+
 async def fetch_all_hosts() -> list:
     """host = customer-NetBox device or VM (merged, distinguished by "kind").
     Serves the ops/debug GET /inventory/hosts endpoint."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _client() as client:
         devices = await _fetch_all(client, settings.NETBOX_URL, settings.NETBOX_TOKEN,
                                    "/api/dcim/devices/?status=active&limit=0")
         vms = await _fetch_all(client, settings.NETBOX_URL, settings.NETBOX_TOKEN,
@@ -84,7 +88,7 @@ async def fetch_managed_hosts_from_gtt() -> list:
     can match telemetry hosts seen on any address."""
     base, token = settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN
     qp = settings.GTT_NETBOX_QUERY_PARAMS
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _client() as client:
         devices = await _fetch_all(client, base, token, f"/api/dcim/devices/?{qp}")
         vms = await _fetch_all(client, base, token, f"/api/virtualization/virtual-machines/?{qp}")
         ip_addrs = await _fetch_all(client, base, token, "/api/ipam/ip-addresses/?limit=0")
@@ -135,7 +139,7 @@ async def fetch_prefixes_from_customer() -> list:
     Site resolution priority mirrors the halo backend: scope > site > tenant."""
     import ipaddress
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _client() as client:
         items = await _fetch_all(client, settings.NETBOX_URL, settings.NETBOX_TOKEN,
                                  "/api/ipam/prefixes/?limit=0")
     out = []

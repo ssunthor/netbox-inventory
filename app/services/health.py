@@ -5,7 +5,7 @@ from app.config import settings
 from app.clients import cmd_client, redis_client
 
 async def ping_netbox() -> bool:
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(timeout=5, verify=settings.NETBOX_VERIFY_SSL) as client:
         try:
             res = await client.get(
                 f"{settings.NETBOX_URL}/api/status/",

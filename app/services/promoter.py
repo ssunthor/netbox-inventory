@@ -20,7 +20,8 @@ async def run_promotion_cycle() -> dict:
 
     if settings.DISCOVERY_AUTOCREATE_ENABLED and eligible:
         prefixes = await store.get_prefixes()
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30,
+                                     verify=settings.NETBOX_VERIFY_SSL) as client:
             for sighting in eligible:
                 if result["created"] >= settings.DISCOVERY_MAX_CREATES_PER_RUN:
                     logger.info("create cap (%d) reached; %d eligible deferred to next cycle",
