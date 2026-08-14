@@ -17,9 +17,9 @@ class Settings(BaseSettings):
     # GT-T NetBox: read-only source of the managed-device list.
     GTT_NETBOX_URL: str
     GTT_NETBOX_TOKEN: str
-    # The customer's tenant id IN THE GT-T NETBOX (not NETBOX_TENANT_ID, which
-    # belongs to the customer instance). Scopes the device/VM/IP sync; without
-    # it the sync walks the entire GT-T inventory.
+    # The customer's tenant id IN THE GT-T NETBOX. Only needed when it
+    # differs from NETBOX_TENANT_ID (the customer-instance tenant), which is
+    # used as the fallback — the sync is always tenant-scoped.
     GTT_NETBOX_TENANT_ID: int | None = None
     # Extra query string applied to the GTT device/VM list calls so ops can
     # scope the sync further (e.g. "status=active&tag=halo&limit=0").

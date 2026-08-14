@@ -104,11 +104,12 @@ async def fetch_managed_hosts_from_gtt() -> list:
     base, token = settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN
     qp = settings.GTT_NETBOX_QUERY_PARAMS
     ip_qp = "limit=0"
-    if settings.GTT_NETBOX_TENANT_ID:
-        qp = f"tenant_id={settings.GTT_NETBOX_TENANT_ID}&{qp}"
+    tenant_id = settings.GTT_NETBOX_TENANT_ID or settings.NETBOX_TENANT_ID
+    if tenant_id:
+        qp = f"tenant_id={tenant_id}&{qp}"
         # Scopes to IPs tenanted in NetBox; untenanted interface IPs are
         # missed here but primary IPs still arrive via the device records.
-        ip_qp = f"tenant_id={settings.GTT_NETBOX_TENANT_ID}&{ip_qp}"
+        ip_qp = f"tenant_id={tenant_id}&{ip_qp}"
     async with _client() as client:
         devices = await _fetch_all(client, base, token, f"/api/dcim/devices/?{qp}")
         vms = await _fetch_all(client, base, token, f"/api/virtualization/virtual-machines/?{qp}")

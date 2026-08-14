@@ -41,6 +41,12 @@ async def test_gtt_tenant_scoping(monkeypatch):
     for route in (devices, vms, ips):
         assert route.calls[0].request.url.params["tenant_id"] == "42"
 
+    # Unset -> falls back to NETBOX_TENANT_ID (1 in conftest)
+    monkeypatch.setattr(settings, "GTT_NETBOX_TENANT_ID", None)
+    await netbox.fetch_managed_hosts_from_gtt()
+    for route in (devices, vms, ips):
+        assert route.calls[-1].request.url.params["tenant_id"] == "1"
+
 
 def test_rebase_forces_configured_scheme_and_host():
     assert netbox._rebase("http://netbox.example.com/api/dcim/devices/?offset=50",
