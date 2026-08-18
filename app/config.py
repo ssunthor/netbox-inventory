@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Extra query string applied to the GTT device/VM list calls so ops can
     # scope the sync further (e.g. "status=active&tag=halo&limit=0").
     GTT_NETBOX_QUERY_PARAMS: str = "status=active&limit=0"
+    # Mirror the GT-T managed set into the customer NetBox after each sync.
+    # GT-T is the record of truth; the customer instance carries a synced
+    # copy (objects tagged halo-managed; hosts that leave the managed set
+    # are marked offline, never deleted).
+    MIRROR_ENABLED: bool = True
 
     # CMD GraphQL API — optional; cmd endpoints report "down" when unset.
     CMD_API_URL: str = ""

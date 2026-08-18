@@ -80,6 +80,8 @@ async def test_gtt_fetch_pagination_and_interface_ips():
     assert len(hosts) == 3  # pagination followed: 2 devices + 1 vm
     fw01 = next(h for h in hosts if h["host_id"] == "device:12")
     assert sorted(fw01["ips"]) == ["10.250.47.10", "10.250.47.11"]
+    assert fw01["cidrs"] == {"10.250.47.10": "10.250.47.10/27",
+                             "10.250.47.11": "10.250.47.11/27"}
     assert fw01["os_version"] == "9.1.3"  # custom_fields.os_build, for CVE scans
     fw02 = next(h for h in hosts if h["host_id"] == "device:13")
     assert fw02["os_version"] is None  # literal "None" placeholder scrubbed
@@ -110,6 +112,9 @@ async def test_prefix_fetch_scope_priority_and_sort():
 
 
 async def test_run_sync_failure_keeps_last_good(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "MIRROR_ENABLED", False)
+
     async def good():
         return [dict(DEVICE_NORM)]
 
@@ -136,3 +141,32 @@ async def test_run_sync_failure_keeps_last_good(monkeypatch):
     assert payload["version"] == 1
     assert payload["hosts"][0]["host_id"] == "device:12"  # last-good preserved
     assert payload["ip_index"] == {"10.250.47.10": "device:12"}
+
+
+async def test_run_sync_mirrors_managed_set(monkeypatch):
+    from app.services import netbox_mirror
+
+    hosts = [{"kind": "device", "id": 12, "host_id": "device:12",
+              "name": "fw01", "ips": ["10.250.47.10"]}]
+
+    async def good():
+        return list(hosts)
+
+    async def no_prefixes():
+        return []
+
+    mirrored = []
+
+    async def fake_mirror(passed_hosts):
+        mirrored.append(passed_hosts)
+        return {"created": 1, "updated": 0, "unchanged": 0,
+                "retired": 0, "failed": 0, "error": None}
+
+    monkeypatch.setattr(netbox, "fetch_managed_hosts_from_gtt", good)
+    monkeypatch.setattr(netbox, "fetch_prefixes_from_customer", no_prefixes)
+    monkeypatch.setattr(netbox_mirror, "mirror_managed_hosts", fake_mirror)
+
+    result = await netbox_sync.run_sync()
+    assert result["ok"]
+    assert result["mirror"]["created"] == 1
+    assert mirrored == [hosts]  # mirror received the synced host set

@@ -70,6 +70,9 @@ def _normalize_device(d: dict) -> dict:
         "os_version": _clean_version((d.get("custom_fields") or {}).get("os_build")),
         "tags": [t.get("slug") for t in (d.get("tags") or [])],
         "ips": [ip for ip in [_bare_ip(primary)] if ip],
+        # bare IP -> full CIDR; "ips" stays bare because the halo backend
+        # keys telemetry matching off bare addresses.
+        "cidrs": {_bare_ip(primary): primary} if primary else {},
     }
 
 
@@ -92,6 +95,7 @@ def _normalize_vm(v: dict) -> dict:
         "disk": v.get("disk"),
         "tags": [t.get("slug") for t in (v.get("tags") or [])],
         "ips": [ip for ip in [_bare_ip(primary)] if ip],
+        "cidrs": {_bare_ip(primary): primary} if primary else {},
     }
 
 
@@ -143,8 +147,10 @@ async def fetch_managed_hosts_from_gtt() -> list:
         else:
             continue
         host = by_key.get(key)
-        if host and addr not in host["ips"]:
-            host["ips"].append(addr)
+        if host:
+            if addr not in host["ips"]:
+                host["ips"].append(addr)
+            host["cidrs"].setdefault(addr, ip["address"])
     return hosts
 
 

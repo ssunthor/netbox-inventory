@@ -4,7 +4,7 @@ from fastapi import APIRouter
 
 from app.config import settings
 from app.schemas import SightingsRequest, SightingsResponse
-from app.services import promoter, store
+from app.services import netbox_mirror, promoter, store
 from app.services.netbox import fetch_all_hosts
 from app.services.netbox_sync import run_sync
 
@@ -49,6 +49,10 @@ async def get_status():
     meta = await store.get_meta()
     return {
         "sync": meta,
+        "mirror": {
+            "enabled": settings.MIRROR_ENABLED,
+            "last_run": netbox_mirror.last_run,
+        },
         "promoter": {
             "autocreate_enabled": settings.DISCOVERY_AUTOCREATE_ENABLED,
             "min_sightings": settings.DISCOVERY_MIN_SIGHTINGS,

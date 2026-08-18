@@ -12,6 +12,8 @@ never shared with the backend's morpheus:* keys in DB 0):
   inv:registered          hash    ip -> JSON {device_id, name, created_at}
   inv:promote:lock:{ip}   string  SET NX EX lock while a promotion is in flight
   inv:nbids               hash    cache of ensured NetBox object ids (role/type/tag/site)
+  inv:mirror              hash    host_id -> JSON {id, fp}: customer-NetBox id and
+                                  content fingerprint of each mirrored managed host
 """
 
 import json
@@ -28,6 +30,7 @@ KEY_PREFIXES = "inv:prefixes"
 KEY_META = "inv:meta"
 KEY_REGISTERED = "inv:registered"
 KEY_NBIDS = "inv:nbids"
+KEY_MIRROR = "inv:mirror"
 SIGHT_PREFIX = "inv:sight:"
 LOCK_PREFIX = "inv:promote:lock:"
 
@@ -223,6 +226,28 @@ async def mark_promotion_failed(ip: str, error: str) -> None:
 
 async def registered_count() -> int:
     return await redis.hlen(KEY_REGISTERED)
+
+
+# --- customer-NetBox mirror bookkeeping --------------------------------------
+
+async def get_mirror_map() -> dict:
+    """host_id -> {"id": customer NetBox id, "fp": content fingerprint}."""
+    raw = await redis.hgetall(KEY_MIRROR)
+    out = {}
+    for host_id, val in raw.items():
+        try:
+            out[host_id] = json.loads(val)
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+async def set_mirror_entry(host_id: str, nbid: int, fp: str) -> None:
+    await redis.hset(KEY_MIRROR, host_id, json.dumps({"id": nbid, "fp": fp}))
+
+
+async def delete_mirror_entry(host_id: str) -> None:
+    await redis.hdel(KEY_MIRROR, host_id)
 
 
 # --- NetBox object-id cache -------------------------------------------------

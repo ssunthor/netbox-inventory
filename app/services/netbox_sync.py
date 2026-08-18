@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from app.config import settings
-from app.services import netbox, store
+from app.services import netbox, netbox_mirror, store
 
 logger = logging.getLogger("inventory.sync")
 
@@ -21,8 +21,13 @@ async def run_sync() -> dict:
         version = await store.save_snapshot(hosts, ip_index, name_index, prefixes)
         logger.info("sync ok: %d hosts, %d prefixes, version %d",
                     len(hosts), len(prefixes), version)
-        return {"ok": True, "version": version,
-                "host_count": len(hosts), "prefix_count": len(prefixes)}
+        result = {"ok": True, "version": version,
+                  "host_count": len(hosts), "prefix_count": len(prefixes)}
+        if settings.MIRROR_ENABLED:
+            # Snapshot is already saved — mirror failures are reported in
+            # the result but never fail the sync.
+            result["mirror"] = await netbox_mirror.mirror_managed_hosts(hosts)
+        return result
     except Exception as exc:
         logger.exception("sync failed")
         await store.record_sync_failure(str(exc))

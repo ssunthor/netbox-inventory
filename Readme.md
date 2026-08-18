@@ -10,6 +10,13 @@ sync and reconciles it with what telemetry actually sees.
   the GT-T NetBox (`GTT_NETBOX_URL`) and site prefixes from the customer
   NetBox (`NETBOX_URL`), normalizes them, and serves a versioned snapshot
   from Redis.
+- **Customer-NetBox mirror** — after each sync, upserts the GT-T managed set
+  into the customer NetBox (devices, VMs, sites, roles, types, platforms,
+  clusters, IPs, primary IP) so the local instance carries a synced copy of
+  the record of truth. Mirrored objects are tagged `halo-managed`; unchanged
+  hosts are skipped via a stored fingerprint, and hosts that leave the GT-T
+  set are marked offline (never deleted). Enabled by default; disable with
+  `MIRROR_ENABLED=false`.
 - **Sighting tracking** — the halo backend reports batches of
   telemetry-observed hosts. Private (RFC1918) IPv4 hosts that are not already
   managed are tracked as _discovered_.
