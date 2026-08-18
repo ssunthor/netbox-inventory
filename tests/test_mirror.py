@@ -51,6 +51,8 @@ async def test_mirror_creates_device(fake_redis):
         return_value=Response(201, json={"id": 11}))
     respx.get("http://netbox.test/api/dcim/sites/").mock(
         return_value=Response(200, json=_page([{"id": 21}])))
+    respx.get("http://netbox.test/api/tenancy/tenants/").mock(
+        return_value=Response(200, json=_page([{"id": 5}])))
     respx.get("http://netbox.test/api/dcim/devices/").mock(
         return_value=Response(200, json=_page([])))  # no same-named object
     device_create = respx.post("http://netbox.test/api/dcim/devices/").mock(
@@ -73,7 +75,7 @@ async def test_mirror_creates_device(fake_redis):
     assert body["name"] == "fw01.acme.net"
     assert body["status"] == "active"       # label normalized to API value
     assert body["device_type"] == 13 and body["role"] == 11 and body["site"] == 21
-    assert body["tenant"] == 1
+    assert body["tenant"] == 5  # resolved from NETBOX_CUSTOMER_NAME
     assert body["tags"] == [{"name": "halo-managed", "slug": "halo-managed"}]
     assert "Mirrored from GT-T NetBox (device:12)" in body["comments"]
     # Real CIDR from GT-T carried through, not a /32 host route
@@ -86,7 +88,8 @@ async def test_mirror_creates_device(fake_redis):
 
 @respx.mock
 async def test_mirror_creates_vm_with_cluster(fake_redis):
-    await _seed_nbids({"tag:halo-managed": 14, "site:lon8": 21})
+    await _seed_nbids({"tag:halo-managed": 14, "tenant:test-corp": 5,
+                       "site:lon8": 21})
     respx.get("http://netbox.test/api/virtualization/clusters/").mock(
         return_value=Response(200, json=_page([{"id": 31}])))
     respx.get("http://netbox.test/api/virtualization/virtual-machines/").mock(
@@ -117,7 +120,7 @@ async def test_mirror_creates_vm_with_cluster(fake_redis):
 
 @respx.mock
 async def test_mirror_unchanged_host_makes_no_api_calls(fake_redis):
-    await _seed_nbids({"tag:halo-managed": 14})
+    await _seed_nbids({"tag:halo-managed": 14, "tenant:test-corp": 5})
     await store.set_mirror_entry("device:12", 100,
                                  netbox_mirror._fingerprint(DEVICE_HOST))
 
@@ -130,7 +133,8 @@ async def test_mirror_unchanged_host_makes_no_api_calls(fake_redis):
 
 @respx.mock
 async def test_mirror_adopts_existing_by_name_and_updates(fake_redis):
-    await _seed_nbids({"tag:halo-managed": 14, "manufacturer:palo-alto": 12,
+    await _seed_nbids({"tag:halo-managed": 14, "tenant:test-corp": 5,
+                       "manufacturer:palo-alto": 12,
                        "devicetype:pa-440": 13, "role:firewall": 11,
                        "site:lon8": 21})
     respx.get("http://netbox.test/api/dcim/devices/").mock(
@@ -156,7 +160,8 @@ async def test_mirror_adopts_existing_by_name_and_updates(fake_redis):
 
 @respx.mock
 async def test_mirror_400_counts_failed_and_surfaces_body(fake_redis, caplog):
-    await _seed_nbids({"tag:halo-managed": 14, "manufacturer:palo-alto": 12,
+    await _seed_nbids({"tag:halo-managed": 14, "tenant:test-corp": 5,
+                       "manufacturer:palo-alto": 12,
                        "devicetype:pa-440": 13, "role:firewall": 11,
                        "site:lon8": 21})
     respx.get("http://netbox.test/api/dcim/devices/").mock(
@@ -173,7 +178,7 @@ async def test_mirror_400_counts_failed_and_surfaces_body(fake_redis, caplog):
 
 @respx.mock
 async def test_mirror_retires_hosts_dropped_from_gtt(fake_redis):
-    await _seed_nbids({"tag:halo-managed": 14})
+    await _seed_nbids({"tag:halo-managed": 14, "tenant:test-corp": 5})
     await store.set_mirror_entry("device:99", 70, "stale-fp")
 
     retire_patch = respx.patch("http://netbox.test/api/dcim/devices/70/").mock(

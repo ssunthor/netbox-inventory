@@ -9,6 +9,7 @@ import httpx
 
 from app.config import settings
 from app.services import classify, store
+from app.services.netbox import _slugify
 
 logger = logging.getLogger("inventory.netbox_write")
 
@@ -72,6 +73,18 @@ async def _ensure(client: httpx.AsyncClient, cache_key: str,
     return nbid
 
 
+async def _resolve_tenant_id(client: httpx.AsyncClient) -> int:
+    """Tenant for objects we write to the customer NetBox, resolved by
+    NETBOX_CUSTOMER_NAME (created if absent). Numeric tenant ids don't
+    transfer between NetBox instances — NETBOX_TENANT_ID belongs to the
+    GT-T instance's scoping and must never be assumed to exist locally."""
+    name = settings.NETBOX_CUSTOMER_NAME
+    slug = _slugify(name)
+    return await _ensure(client, f"tenant:{slug}",
+                         f"/api/tenancy/tenants/?slug={slug}",
+                         "/api/tenancy/tenants/", {"name": name, "slug": slug})
+
+
 async def _resolve_site_id(client: httpx.AsyncClient, ip: str, prefixes: list) -> int:
     match = classify.site_for_ip(ip, prefixes)
     if match:
@@ -121,6 +134,7 @@ async def register_discovered_host(client: httpx.AsyncClient,
                   "/api/extras/tags/?slug=halo-discovered",
                   "/api/extras/tags/", DISCOVERY_TAG)
     site_id = await _resolve_site_id(client, ip, prefixes)
+    tenant_id = await _resolve_tenant_id(client)
 
     # 3. Create the device (PTR name when known, else the IP).
     name = sighting.get("name") or ip
@@ -131,7 +145,7 @@ async def register_discovered_host(client: httpx.AsyncClient,
         "device_type": type_id,
         "site": site_id,
         "status": "active",
-        "tenant": settings.NETBOX_TENANT_ID,
+        "tenant": tenant_id,
         "tags": [{"name": DISCOVERY_TAG["name"], "slug": DISCOVERY_TAG["slug"]}],
         "comments": (f"Auto-discovered by Defense Halo on "
                      f"{time.strftime('%Y-%m-%d', time.gmtime())}; "
@@ -157,7 +171,7 @@ async def register_discovered_host(client: httpx.AsyncClient,
     else:
         ip_obj = await _post(client, "/api/ipam/ip-addresses/",
                              {"address": f"{ip}/32", "status": "active",
-                              "tenant": settings.NETBOX_TENANT_ID,
+                              "tenant": tenant_id,
                               "assigned_object_type": "dcim.interface",
                               "assigned_object_id": interface["id"]})
     await _patch(client, f"/api/dcim/devices/{device_id}/",

@@ -7,7 +7,12 @@ class Settings(BaseSettings):
     # site prefixes are read from.
     NETBOX_URL: str
     NETBOX_TOKEN: str
+    # Objects written to the customer NetBox are tenanted under a tenant
+    # with this name, created if absent (numeric ids don't transfer
+    # between instances, so NETBOX_TENANT_ID is never used for writes).
     NETBOX_CUSTOMER_NAME: str
+    # The customer's tenant id in the GT-T NetBox — the fallback scope for
+    # the managed-host sync when GTT_NETBOX_TENANT_ID is unset.
     NETBOX_TENANT_ID: int
     NETBOX_SYNC_INTERVAL: int = 86400
     # Set false for dev/test NetBox instances with self-signed certificates.

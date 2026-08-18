@@ -97,9 +97,10 @@ async def _ensure_cluster(client: httpx.AsyncClient, name: str) -> int:
     return nbid
 
 
-async def _build_payload(client: httpx.AsyncClient, host: dict) -> dict:
+async def _build_payload(client: httpx.AsyncClient, host: dict,
+                         tenant_id: int) -> dict:
     payload = {"name": host["name"], "status": _status_value(host),
-               "tenant": settings.NETBOX_TENANT_ID, "tags": list(TAG_REF)}
+               "tenant": tenant_id, "tags": list(TAG_REF)}
     if host.get("platform"):
         payload["platform"] = await _ensure_named(
             client, "platform", host["platform"], "/api/dcim/platforms/")
@@ -127,7 +128,8 @@ async def _build_payload(client: httpx.AsyncClient, host: dict) -> dict:
     return payload
 
 
-async def _sync_ips(client: httpx.AsyncClient, host: dict, nbid: int, kind: str) -> None:
+async def _sync_ips(client: httpx.AsyncClient, host: dict, nbid: int,
+                    kind: str, tenant_id: int) -> None:
     """Attach every known IP to a single mirror interface and set the
     primary. IPs assigned to some other object are left alone — the mirror
     never steals addresses."""
@@ -173,8 +175,7 @@ async def _sync_ips(client: httpx.AsyncClient, host: dict, nbid: int, kind: str)
             address = (host.get("cidrs") or {}).get(ip) \
                 or f"{ip}/{128 if ':' in ip else 32}"
             ip_obj = await netbox_write._post(client, "/api/ipam/ip-addresses/", {
-                "address": address, "status": "active",
-                "tenant": settings.NETBOX_TENANT_ID,
+                "address": address, "status": "active", "tenant": tenant_id,
                 "assigned_object_type": obj_type, "assigned_object_id": if_id})
         if ip == primary_bare:
             primary_patch["primary_ip6" if ":" in ip else "primary_ip4"] = ip_obj["id"]
@@ -183,13 +184,13 @@ async def _sync_ips(client: httpx.AsyncClient, host: dict, nbid: int, kind: str)
 
 
 async def _upsert_host(client: httpx.AsyncClient, host: dict,
-                       entry: dict | None) -> tuple[int, str]:
+                       entry: dict | None, tenant_id: int) -> tuple[int, str]:
     """Create or update one host in the customer NetBox. Returns
     (customer NetBox id, "created" | "updated"). Adopting an existing
     same-named object upgrades discovery placeholders in place."""
     kind = host.get("kind", "device")
     base = _base_path(kind)
-    payload = await _build_payload(client, host)
+    payload = await _build_payload(client, host, tenant_id)
     nbid = entry.get("id") if entry else None
     action = "updated"
     if not nbid:
@@ -210,7 +211,7 @@ async def _upsert_host(client: httpx.AsyncClient, host: dict,
             f"on {time.strftime('%Y-%m-%d', time.gmtime())}")
         nbid = (await netbox_write._post(client, base, payload))["id"]
         action = "created"
-    await _sync_ips(client, host, nbid, kind)
+    await _sync_ips(client, host, nbid, kind, tenant_id)
     return nbid, action
 
 
@@ -229,6 +230,7 @@ async def mirror_managed_hosts(hosts: list) -> dict:
             await netbox_write._ensure(
                 client, "tag:halo-managed", "/api/extras/tags/?slug=halo-managed",
                 "/api/extras/tags/", MANAGED_TAG)
+            tenant_id = await netbox_write._resolve_tenant_id(client)
             seen = set()
             for host in hosts:
                 host_id = host.get("host_id")
@@ -241,7 +243,7 @@ async def mirror_managed_hosts(hosts: list) -> dict:
                     result["unchanged"] += 1
                     continue
                 try:
-                    nbid, action = await _upsert_host(client, host, entry)
+                    nbid, action = await _upsert_host(client, host, entry, tenant_id)
                     await store.set_mirror_entry(host_id, nbid, fp)
                     result[action] += 1
                 except httpx.HTTPStatusError as exc:

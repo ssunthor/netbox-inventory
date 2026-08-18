@@ -44,6 +44,8 @@ async def test_full_registration_sequence(fake_redis, monkeypatch):
         return_value=Response(200, json=_page([{"id": 14}])))
     respx.get("http://netbox.test/api/dcim/sites/").mock(
         return_value=Response(200, json=_page([{"id": 21}])))
+    respx.get("http://netbox.test/api/tenancy/tenants/").mock(
+        return_value=Response(200, json=_page([{"id": 5}])))
     device_create = respx.post("http://netbox.test/api/dcim/devices/").mock(
         return_value=Response(201, json={"id": 100}))
     respx.post("http://netbox.test/api/dcim/interfaces/").mock(
@@ -62,7 +64,8 @@ async def test_full_registration_sequence(fake_redis, monkeypatch):
     assert device_payload["role"] == 11
     assert device_payload["device_type"] == 13
     assert device_payload["site"] == 21  # prefix-matched site, not Unassigned
-    assert device_payload["tenant"] == 1
+    # Resolved from NETBOX_CUSTOMER_NAME, never the raw NETBOX_TENANT_ID
+    assert device_payload["tenant"] == 5
     assert device_payload["tags"] == [{"name": "halo-discovered",
                                        "slug": "halo-discovered"}]
 
