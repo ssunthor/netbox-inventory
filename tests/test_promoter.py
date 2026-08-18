@@ -63,7 +63,8 @@ async def test_full_registration_sequence(fake_redis, monkeypatch):
     assert device_payload["device_type"] == 13
     assert device_payload["site"] == 21  # prefix-matched site, not Unassigned
     assert device_payload["tenant"] == 1
-    assert device_payload["tags"] == [14]
+    assert device_payload["tags"] == [{"name": "halo-discovered",
+                                       "slug": "halo-discovered"}]
 
     ip_payload = json.loads(ip_create.calls[0].request.content)
     assert ip_payload["address"] == f"{ip}/32"

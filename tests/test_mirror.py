@@ -73,7 +73,8 @@ async def test_mirror_creates_device(fake_redis):
     assert body["name"] == "fw01.acme.net"
     assert body["status"] == "active"       # label normalized to API value
     assert body["device_type"] == 13 and body["role"] == 11 and body["site"] == 21
-    assert body["tenant"] == 1 and body["tags"] == [14]
+    assert body["tenant"] == 1
+    assert body["tags"] == [{"name": "halo-managed", "slug": "halo-managed"}]
     assert "Mirrored from GT-T NetBox (device:12)" in body["comments"]
     # Real CIDR from GT-T carried through, not a /32 host route
     assert json.loads(ip_create.calls[0].request.content)["address"] == "10.250.47.10/27"
@@ -151,6 +152,23 @@ async def test_mirror_adopts_existing_by_name_and_updates(fake_redis):
     assert body["device_type"] == 13 and "comments" not in body
     mapping = await store.get_mirror_map()
     assert mapping["device:12"]["id"] == 55  # adopted, now tracked
+
+
+@respx.mock
+async def test_mirror_400_counts_failed_and_surfaces_body(fake_redis, caplog):
+    await _seed_nbids({"tag:halo-managed": 14, "manufacturer:palo-alto": 12,
+                       "devicetype:pa-440": 13, "role:firewall": 11,
+                       "site:lon8": 21})
+    respx.get("http://netbox.test/api/dcim/devices/").mock(
+        return_value=Response(200, json=_page([{"id": 9, "name": "fw01.acme.net"}])))
+    respx.patch("http://netbox.test/api/dcim/devices/9/").mock(
+        return_value=Response(400, json={"tags": ["Expected a dictionary"]}))
+
+    result = await netbox_mirror.mirror_managed_hosts([dict(DEVICE_HOST)])
+
+    assert result["failed"] == 1 and result["error"] is None  # not fatal
+    assert await store.get_mirror_map() == {}  # failed host stays untracked
+    assert "Expected a dictionary" in caplog.text  # NetBox body in the log
 
 
 @respx.mock

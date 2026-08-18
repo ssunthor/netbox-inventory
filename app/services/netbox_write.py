@@ -28,21 +28,31 @@ def _url(path: str) -> str:
     return f"{settings.NETBOX_URL}{path}"
 
 
+def _check(resp: httpx.Response) -> None:
+    """raise_for_status, but with the NetBox error body — which names the
+    exact offending field — folded into the exception message."""
+    if resp.is_error:
+        raise httpx.HTTPStatusError(
+            f"{resp.status_code} {resp.reason_phrase} for "
+            f"{resp.request.method} {resp.request.url}: {resp.text[:500]}",
+            request=resp.request, response=resp)
+
+
 async def _get_results(client: httpx.AsyncClient, path: str) -> list:
     resp = await client.get(_url(path), headers=_headers())
-    resp.raise_for_status()
+    _check(resp)
     return resp.json().get("results", [])
 
 
 async def _post(client: httpx.AsyncClient, path: str, payload: dict) -> dict:
     resp = await client.post(_url(path), headers=_headers(), json=payload)
-    resp.raise_for_status()
+    _check(resp)
     return resp.json()
 
 
 async def _patch(client: httpx.AsyncClient, path: str, payload: dict) -> dict:
     resp = await client.patch(_url(path), headers=_headers(), json=payload)
-    resp.raise_for_status()
+    _check(resp)
     return resp.json()
 
 
@@ -105,9 +115,11 @@ async def register_discovered_host(client: httpx.AsyncClient,
                             "/api/dcim/device-types/?slug=unknown",
                             "/api/dcim/device-types/",
                             {**UNKNOWN_DEVICE_TYPE, "manufacturer": mfr_id})
-    tag_id = await _ensure(client, "tag:halo-discovered",
-                           "/api/extras/tags/?slug=halo-discovered",
-                           "/api/extras/tags/", DISCOVERY_TAG)
+    # Ensures the tag exists (with our color); assignment below must use the
+    # dict form — NetBox's writable tags field rejects bare integer ids.
+    await _ensure(client, "tag:halo-discovered",
+                  "/api/extras/tags/?slug=halo-discovered",
+                  "/api/extras/tags/", DISCOVERY_TAG)
     site_id = await _resolve_site_id(client, ip, prefixes)
 
     # 3. Create the device (PTR name when known, else the IP).
@@ -120,7 +132,7 @@ async def register_discovered_host(client: httpx.AsyncClient,
         "site": site_id,
         "status": "active",
         "tenant": settings.NETBOX_TENANT_ID,
-        "tags": [tag_id],
+        "tags": [{"name": DISCOVERY_TAG["name"], "slug": DISCOVERY_TAG["slug"]}],
         "comments": (f"Auto-discovered by Defense Halo on "
                      f"{time.strftime('%Y-%m-%d', time.gmtime())}; "
                      f"sightings={sighting.get('count', 0)}; sources={sources}"),

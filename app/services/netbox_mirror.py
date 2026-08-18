@@ -25,6 +25,8 @@ from app.services.netbox import _slugify
 logger = logging.getLogger("inventory.mirror")
 
 MANAGED_TAG = {"name": "halo-managed", "slug": "halo-managed", "color": "2196f3"}
+# NetBox's writable tags field takes dicts, never bare integer ids.
+TAG_REF = [{"name": MANAGED_TAG["name"], "slug": MANAGED_TAG["slug"]}]
 
 # Introspection for GET /inventory/status; updated each cycle.
 last_run: dict = {"at": None, "hosts": 0, "created": 0, "updated": 0,
@@ -95,9 +97,9 @@ async def _ensure_cluster(client: httpx.AsyncClient, name: str) -> int:
     return nbid
 
 
-async def _build_payload(client: httpx.AsyncClient, host: dict, tag_id: int) -> dict:
+async def _build_payload(client: httpx.AsyncClient, host: dict) -> dict:
     payload = {"name": host["name"], "status": _status_value(host),
-               "tenant": settings.NETBOX_TENANT_ID, "tags": [tag_id]}
+               "tenant": settings.NETBOX_TENANT_ID, "tags": list(TAG_REF)}
     if host.get("platform"):
         payload["platform"] = await _ensure_named(
             client, "platform", host["platform"], "/api/dcim/platforms/")
@@ -180,14 +182,14 @@ async def _sync_ips(client: httpx.AsyncClient, host: dict, nbid: int, kind: str)
         await netbox_write._patch(client, f"{_base_path(kind)}{nbid}/", primary_patch)
 
 
-async def _upsert_host(client: httpx.AsyncClient, host: dict, tag_id: int,
+async def _upsert_host(client: httpx.AsyncClient, host: dict,
                        entry: dict | None) -> tuple[int, str]:
     """Create or update one host in the customer NetBox. Returns
     (customer NetBox id, "created" | "updated"). Adopting an existing
     same-named object upgrades discovery placeholders in place."""
     kind = host.get("kind", "device")
     base = _base_path(kind)
-    payload = await _build_payload(client, host, tag_id)
+    payload = await _build_payload(client, host)
     nbid = entry.get("id") if entry else None
     action = "updated"
     if not nbid:
@@ -223,7 +225,8 @@ async def mirror_managed_hosts(hosts: list) -> dict:
         mapping = await store.get_mirror_map()
         async with httpx.AsyncClient(timeout=30,
                                      verify=settings.NETBOX_VERIFY_SSL) as client:
-            tag_id = await netbox_write._ensure(
+            # Existence/color only; assignment uses TAG_REF dicts.
+            await netbox_write._ensure(
                 client, "tag:halo-managed", "/api/extras/tags/?slug=halo-managed",
                 "/api/extras/tags/", MANAGED_TAG)
             seen = set()
@@ -238,9 +241,14 @@ async def mirror_managed_hosts(hosts: list) -> dict:
                     result["unchanged"] += 1
                     continue
                 try:
-                    nbid, action = await _upsert_host(client, host, tag_id, entry)
+                    nbid, action = await _upsert_host(client, host, entry)
                     await store.set_mirror_entry(host_id, nbid, fp)
                     result[action] += 1
+                except httpx.HTTPStatusError as exc:
+                    # Message carries the NetBox error body (see
+                    # netbox_write._check); no traceback needed.
+                    logger.error("mirror failed for %s: %s", host_id, exc)
+                    result["failed"] += 1
                 except Exception:
                     logger.exception("mirror failed for %s", host_id)
                     result["failed"] += 1
