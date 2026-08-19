@@ -80,9 +80,33 @@ async def _resolve_tenant_id(client: httpx.AsyncClient) -> int:
     GT-T instance's scoping and must never be assumed to exist locally."""
     name = settings.NETBOX_CUSTOMER_NAME
     slug = _slugify(name)
-    return await _ensure(client, f"tenant:{slug}",
-                         f"/api/tenancy/tenants/?slug={slug}",
-                         "/api/tenancy/tenants/", {"name": name, "slug": slug})
+    cached = await store.get_nbid(f"tenant:{slug}")
+    if cached:
+        return cached
+    results = await _get_results(client, f"/api/tenancy/tenants/?slug={slug}")
+    if results:
+        nbid = results[0]["id"]
+    else:
+        payload = {"name": name, "slug": slug}
+        try:
+            nbid = (await _post(client, "/api/tenancy/tenants/", payload))["id"]
+        except httpx.HTTPStatusError as exc:
+            # Stock NetBox leaves tenant.group optional, but some instances
+            # enforce it via custom validation — retry under an ensured
+            # NETBOX_TENANT_GROUP group only when the instance demands it.
+            if exc.response.status_code != 400 or b"group" not in exc.response.content:
+                raise
+            group_name = settings.NETBOX_TENANT_GROUP
+            group_slug = _slugify(group_name)
+            group_id = await _ensure(
+                client, f"tenantgroup:{group_slug}",
+                f"/api/tenancy/tenant-groups/?slug={group_slug}",
+                "/api/tenancy/tenant-groups/",
+                {"name": group_name, "slug": group_slug})
+            nbid = (await _post(client, "/api/tenancy/tenants/",
+                                {**payload, "group": group_id}))["id"]
+    await store.set_nbid(f"tenant:{slug}", nbid)
+    return nbid
 
 
 async def _resolve_site_id(client: httpx.AsyncClient, ip: str, prefixes: list) -> int:
