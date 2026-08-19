@@ -183,6 +183,25 @@ async def _sync_ips(client: httpx.AsyncClient, host: dict, nbid: int,
         await netbox_write._patch(client, f"{_base_path(kind)}{nbid}/", primary_patch)
 
 
+async def _write_host(client: httpx.AsyncClient, method, path: str,
+                      payload: dict) -> dict:
+    """POST/PATCH a device or VM. NetBox rejects a VM whose site doesn't
+    match its cluster's assigned site; our mirrored clusters carry no site
+    scope, so on that specific validation error retry without the site —
+    the VM is still placed via its cluster."""
+    try:
+        return await method(client, path, payload)
+    except httpx.HTTPStatusError as exc:
+        if (exc.response.status_code == 400
+                and "site" in payload and "cluster" in payload
+                and b"not assigned to this site" in exc.response.content):
+            logger.info("dropping site from %s (cluster/site scope conflict)",
+                        payload.get("name"))
+            return await method(client, path,
+                                {k: v for k, v in payload.items() if k != "site"})
+        raise
+
+
 async def _upsert_host(client: httpx.AsyncClient, host: dict,
                        entry: dict | None, tenant_id: int) -> tuple[int, str]:
     """Create or update one host in the customer NetBox. Returns
@@ -200,7 +219,7 @@ async def _upsert_host(client: httpx.AsyncClient, host: dict,
             nbid = found[0]["id"]
     if nbid:
         try:
-            await netbox_write._patch(client, f"{base}{nbid}/", payload)
+            await _write_host(client, netbox_write._patch, f"{base}{nbid}/", payload)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 raise
@@ -209,7 +228,7 @@ async def _upsert_host(client: httpx.AsyncClient, host: dict,
         payload["comments"] = (
             f"Mirrored from GT-T NetBox ({host['host_id']}) by Defense Halo "
             f"on {time.strftime('%Y-%m-%d', time.gmtime())}")
-        nbid = (await netbox_write._post(client, base, payload))["id"]
+        nbid = (await _write_host(client, netbox_write._post, base, payload))["id"]
         action = "created"
     await _sync_ips(client, host, nbid, kind, tenant_id)
     return nbid, action
