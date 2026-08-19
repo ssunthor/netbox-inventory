@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # The customer's tenant id in the GT-T NetBox — the fallback scope for
     # the managed-host sync when GTT_NETBOX_TENANT_ID is unset.
     NETBOX_TENANT_ID: int
+    # Tenant group used only when the customer instance requires tenants to
+    # have a group (stock NetBox does not); created if absent.
+    NETBOX_TENANT_GROUP: str = "Customers"
     NETBOX_SYNC_INTERVAL: int = 86400
     # Set false for dev/test NetBox instances with self-signed certificates.
     # Applies to both the customer and GT-T NetBox clients.

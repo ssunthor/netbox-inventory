@@ -119,6 +119,37 @@ async def test_mirror_creates_vm_with_cluster(fake_redis):
 
 
 @respx.mock
+async def test_mirror_vm_site_cluster_conflict_retries_without_site(fake_redis):
+    await _seed_nbids({"tag:halo-managed": 14, "tenant:test-corp": 5,
+                       "site:lon8": 21, "cluster:prod": 31})
+    respx.get("http://netbox.test/api/virtualization/virtual-machines/").mock(
+        return_value=Response(200, json=_page([])))
+    vm_create = respx.post("http://netbox.test/api/virtualization/virtual-machines/").mock(
+        side_effect=[
+            Response(400, json={"cluster": [
+                "The selected cluster (prod) is not assigned to this site (LON8)."]}),
+            Response(201, json={"id": 101}),
+        ])
+    respx.get("http://netbox.test/api/virtualization/interfaces/").mock(
+        return_value=Response(200, json=_page([{"id": 201}])))
+    respx.get("http://netbox.test/api/ipam/ip-addresses/").mock(
+        return_value=Response(200, json=_page([
+            {"id": 301, "address": "10.250.47.20/27",
+             "assigned_object_type": "virtualization.vminterface",
+             "assigned_object_id": 201}])))
+    respx.patch("http://netbox.test/api/virtualization/virtual-machines/101/").mock(
+        return_value=Response(200, json={"id": 101}))
+
+    result = await netbox_mirror.mirror_managed_hosts([dict(VM_HOST)])
+
+    assert result["created"] == 1 and result["failed"] == 0
+    first = json.loads(vm_create.calls[0].request.content)
+    assert first["site"] == 21 and first["cluster"] == 31
+    retry = json.loads(vm_create.calls[1].request.content)
+    assert "site" not in retry and retry["cluster"] == 31
+
+
+@respx.mock
 async def test_mirror_unchanged_host_makes_no_api_calls(fake_redis):
     await _seed_nbids({"tag:halo-managed": 14, "tenant:test-corp": 5})
     await store.set_mirror_entry("device:12", 100,
