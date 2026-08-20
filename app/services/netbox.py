@@ -1,8 +1,16 @@
+import asyncio
 import re
 
 import httpx
 
+from app.clients import cmd_client
 from app.config import settings
+from app.services import store
+
+# CMD custom field format is "{gnid}-{segment_id}"; segment_id is the trailing int.
+CMD_SEGMENT_ID_PATTERN = re.compile(r"-(\d+)$")
+# Placeholder site name NetBox falls back to when no real location is set.
+NETBOX_GENERIC_SITE_NAME = "CST"
 
 
 def _headers(token: str) -> dict:
@@ -99,6 +107,48 @@ def _normalize_vm(v: dict) -> dict:
     }
 
 
+def _format_site_address(location: dict) -> str | None:
+    parts = [location.get("a_address"), location.get("a_city"),
+             location.get("a_state"), location.get("a_postal_code")]
+    parts = [p for p in parts if p]
+    return ", ".join(parts) if parts else None
+
+
+async def _resolve_host_location(host: dict, raw: dict, semaphore: asyncio.Semaphore) -> None:
+    """Fill host["site"] with a real address from CMD when NetBox only has a
+    real location or the generic placeholder site to go on."""
+    if host.get("location"):
+        return
+    if host.get("site") and host["site"] != NETBOX_GENERIC_SITE_NAME:
+        return
+
+    slid = (raw.get("custom_fields") or {}).get("cmd_slid")
+    if not slid:
+        return
+    match = CMD_SEGMENT_ID_PATTERN.search(str(slid))
+    if not match:
+        return
+    segment_id = match.group(1)
+
+    async with semaphore:
+        cached = await store.get_location(segment_id)
+        if cached:
+            host["site"] = cached
+            return
+
+        try:
+            location = await cmd_client.get_location_by_segment(int(segment_id))
+        except (httpx.HTTPError, ValueError):
+            return
+    if not location:
+        return
+    address = _format_site_address(location)
+    if not address:
+        return
+    await store.set_location(segment_id, address)
+    host["site"] = address
+
+
 def _client(**kwargs) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL, **kwargs)
 
@@ -134,6 +184,8 @@ async def fetch_managed_hosts_from_gtt() -> list:
 
     hosts = [_normalize_device(d) for d in devices] + [_normalize_vm(v) for v in vms]
     by_key = {h["host_id"]: h for h in hosts}
+    raw_by_key = {f"device:{d.get('id')}": d for d in devices}
+    raw_by_key.update({f"vm:{v.get('id')}": v for v in vms})
     for ip in ip_addrs:
         addr = _bare_ip(ip.get("address"))
         if not addr:
@@ -151,6 +203,12 @@ async def fetch_managed_hosts_from_gtt() -> list:
             if addr not in host["ips"]:
                 host["ips"].append(addr)
             host["cidrs"].setdefault(addr, ip["address"])
+
+    semaphore = asyncio.Semaphore(10)
+    await asyncio.gather(*(
+        _resolve_host_location(h, raw_by_key.get(h["host_id"], {}), semaphore)
+        for h in hosts
+    ))
     return hosts
 
 

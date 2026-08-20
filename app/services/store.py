@@ -14,6 +14,8 @@ never shared with the backend's morpheus:* keys in DB 0):
   inv:nbids               hash    cache of ensured NetBox object ids (role/type/tag/site)
   inv:mirror              hash    host_id -> JSON {id, fp}: customer-NetBox id and
                                   content fingerprint of each mirrored managed host
+  inv:location            hash    cmd segment_id -> formatted address from CMD (never
+                                  invalidated - addresses don't change)
 """
 
 import json
@@ -31,6 +33,7 @@ KEY_META = "inv:meta"
 KEY_REGISTERED = "inv:registered"
 KEY_NBIDS = "inv:nbids"
 KEY_MIRROR = "inv:mirror"
+KEY_LOCATION = "inv:location"
 SIGHT_PREFIX = "inv:sight:"
 LOCK_PREFIX = "inv:promote:lock:"
 
@@ -259,3 +262,13 @@ async def get_nbid(cache_key: str) -> int | None:
 
 async def set_nbid(cache_key: str, nbid: int) -> None:
     await redis.hset(KEY_NBIDS, cache_key, nbid)
+
+
+# --- CMD location cache ------------------------------------------------------
+
+async def get_location(segment_id: str) -> str | None:
+    return await redis.hget(KEY_LOCATION, segment_id)
+
+
+async def set_location(segment_id: str, address: str) -> None:
+    await redis.hset(KEY_LOCATION, segment_id, address)
