@@ -1,8 +1,17 @@
+import asyncio
+import hashlib
 import re
 
 import httpx
 
+from app.clients import cmd_client
 from app.config import settings
+from app.services import store
+
+# CMD custom field format is "{gnid}-{segment_id}"; segment_id is the trailing int.
+CMD_SEGMENT_ID_PATTERN = re.compile(r"-(\d+)$")
+# Placeholder site name NetBox falls back to when no real location is set.
+NETBOX_GENERIC_SITE_NAME = "CST"
 
 
 def _headers(token: str) -> dict:
@@ -99,6 +108,85 @@ def _normalize_vm(v: dict) -> dict:
     }
 
 
+def _format_site_address(location: dict) -> str | None:
+    parts = [location.get("a_address"), location.get("a_city"),
+             location.get("a_state"), location.get("a_postal_code")]
+    parts = [p for p in parts if p]
+    return ", ".join(parts) if parts else None
+
+
+async def _resolve_host_location(host: dict, raw: dict, semaphore: asyncio.Semaphore) -> None:
+    """Fill host["site"] with a real address from CMD when NetBox only has a
+    real location or the generic placeholder site to go on."""
+    if host.get("location"):
+        return
+    if host.get("site") and host["site"] != NETBOX_GENERIC_SITE_NAME:
+        return
+
+    slid = (raw.get("custom_fields") or {}).get("cmd_slid")
+    if not slid:
+        return
+    match = CMD_SEGMENT_ID_PATTERN.search(str(slid))
+    if not match:
+        return
+    segment_id = match.group(1)
+
+    async with semaphore:
+        cached = await store.get_location(segment_id)
+        if cached:
+            host["site"] = cached
+            return
+
+        try:
+            location = await cmd_client.get_location_by_segment(int(segment_id))
+        except (httpx.HTTPError, ValueError):
+            return
+    if not location:
+        return
+    address = _format_site_address(location)
+    if not address:
+        return
+    await store.set_location(segment_id, address)
+    host["site"] = address
+
+
+def _compute_site_name(address_str: str) -> dict:
+    """Derives a stable site_id (hash) and short display_name from a resolved
+    CMD address. Neither NetBox nor CMD has a "site" concept of its own -
+    port of halo-dev-statrb's netbox_sync_worker.py compute_site()."""
+    parts = [p.strip() for p in (address_str or "").split(",")]
+    address = parts[0] if len(parts) > 0 else ""
+    city = parts[1] if len(parts) > 1 else ""
+    state = parts[2] if len(parts) > 2 else ""
+    postal = parts[3] if len(parts) > 3 else ""
+
+    normalized = ", ".join(p.lower() for p in [address, city, state, postal] if p)
+    normalized = re.sub(r"[^a-z0-9, ]", "", normalized)
+    site_id = hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+    city_abbrev = re.sub(r"[^A-Za-z]", "", city).upper()[:3]
+    street_rest = address.split(" ", 1)[1] if " " in address else address
+    street_token = re.sub(r"\b(rd|st|ave|blvd|dr|ln)\b", "", street_rest, flags=re.I)
+    street_token = re.sub(r"[^A-Za-z]", "", street_token).upper()
+    customer_prefix = settings.NETBOX_CUSTOMER_NAME.upper() if settings.NETBOX_CUSTOMER_NAME else "CUSTOMER"
+    display_name = f"{customer_prefix}-US-{state}{city_abbrev}-{street_token}"
+
+    return {"site_id": site_id, "display_name": display_name}
+
+
+def _disambiguate_site_names(items: list) -> None:
+    """Appends -{site_id[:6]} (in place) to any display_name shared by more
+    than one entry - address-derived names can collide (e.g. two streets
+    abbreviating the same way). Only touches names that actually collide."""
+    by_name: dict = {}
+    for item in items:
+        by_name.setdefault(item["display_name"], []).append(item)
+    for group in by_name.values():
+        if len(group) > 1:
+            for item in group:
+                item["display_name"] = f"{item['display_name']}-{item['site_id'][:6]}"
+
+
 def _client(**kwargs) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL, **kwargs)
 
@@ -134,6 +222,8 @@ async def fetch_managed_hosts_from_gtt() -> list:
 
     hosts = [_normalize_device(d) for d in devices] + [_normalize_vm(v) for v in vms]
     by_key = {h["host_id"]: h for h in hosts}
+    raw_by_key = {f"device:{d.get('id')}": d for d in devices}
+    raw_by_key.update({f"vm:{v.get('id')}": v for v in vms})
     for ip in ip_addrs:
         addr = _bare_ip(ip.get("address"))
         if not addr:
@@ -151,6 +241,23 @@ async def fetch_managed_hosts_from_gtt() -> list:
             if addr not in host["ips"]:
                 host["ips"].append(addr)
             host["cidrs"].setdefault(addr, ip["address"])
+
+    semaphore = asyncio.Semaphore(10)
+    await asyncio.gather(*(
+        _resolve_host_location(h, raw_by_key.get(h["host_id"], {}), semaphore)
+        for h in hosts
+    ))
+
+    # _resolve_host_location writes the raw CMD address (always
+    # "addr, city, state, zip") into host["site"] on success; replace it with
+    # our short computed name. Disambiguation needs the full batch, so this
+    # runs as a second pass after every host is resolved, not inline above.
+    computed = [{**_compute_site_name(h["site"]), "host": h}
+                for h in hosts if h.get("site") and "," in h["site"]]
+    _disambiguate_site_names(computed)
+    for c in computed:
+        c["host"]["site"] = c["display_name"]
+
     return hosts
 
 

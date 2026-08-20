@@ -11,3 +11,12 @@ variables:
   CI_APPLICATION_TAG: $CI_COMMIT_REF_SLUG
   KANIKO_CLI_ARGS: "--skip-tls-verify"
   PMD_CPD_DIR: "app"
+
+# CI_APPLICATION_REPOSITORY/TAG resolve differently for container_build vs.
+# update_annotations across the Container-Single-Platform-Base include chain
+# (container_build correctly uses this project's override; update_annotations
+# falls back to the template's own tmp/$CI_PIPELINE_ID default and then fails
+# to find that image). Non-blocking locally until the shared template is
+# fixed - backend/frontend carry the same override and likely hit this too.
+update_annotations:
+  allow_failure: true
