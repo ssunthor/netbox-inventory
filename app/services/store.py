@@ -16,6 +16,8 @@ never shared with the backend's morpheus:* keys in DB 0):
                                   content fingerprint of each mirrored managed host
   inv:location            hash    cmd segment_id -> formatted address from CMD (never
                                   invalidated - addresses don't change)
+  inv:imported            hash    ip -> JSON {device_id, name, ip, site, role,
+                                  manufacturer, model, created_at}: CSV-imported hosts
 """
 
 import json
@@ -34,6 +36,7 @@ KEY_REGISTERED = "inv:registered"
 KEY_NBIDS = "inv:nbids"
 KEY_MIRROR = "inv:mirror"
 KEY_LOCATION = "inv:location"
+KEY_IMPORTED = "inv:imported"
 SIGHT_PREFIX = "inv:sight:"
 LOCK_PREFIX = "inv:promote:lock:"
 
@@ -225,6 +228,53 @@ async def mark_promotion_failed(ip: str, error: str) -> None:
     key = f"{SIGHT_PREFIX}{ip}"
     if await redis.exists(key):
         await redis.hset(key, "last_error", error[:300])
+
+
+# --- CSV-imported host bookkeeping -------------------------------------------
+
+async def mark_imported(ip: str, device_id: int | None, name: str, row: dict) -> None:
+    """Record one CSV-imported host, keyed by ip. Deliberately does NOT touch
+    ip_index/KEY_META (unlike mark_registered) - imported hosts are a
+    separate category from GTT-managed, not a subset of it, so they must
+    stay out of the shared ip_index reconcile_inventory_stamps() uses to
+    stamp topology nodes "managed" - otherwise a formerly-silent imported
+    host that starts sending telemetry would get mislabeled Managed instead
+    of Imported. inv:imported itself (checked by is_ip_imported) is the
+    dedup source for re-imports instead."""
+    info = {
+        "device_id": device_id, "name": name, "ip": ip,
+        "site": row.get("site"), "role": row.get("role"),
+        "manufacturer": row.get("manufacturer"), "model": row.get("model"),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    await redis.hset(KEY_IMPORTED, ip, json.dumps(info))
+
+
+async def is_ip_imported(ip: str) -> bool:
+    return bool(await redis.hexists(KEY_IMPORTED, ip))
+
+
+async def list_imported() -> list[dict]:
+    raw = await redis.hgetall(KEY_IMPORTED)
+    out = []
+    for ip, val in raw.items():
+        try:
+            out.append(json.loads(val))
+        except (ValueError, TypeError):
+            continue
+    out.sort(key=lambda e: e.get("created_at") or "", reverse=True)
+    return out
+
+
+async def get_imported_by_device_id(device_id: int) -> dict | None:
+    for entry in await list_imported():
+        if entry.get("device_id") == device_id:
+            return entry
+    return None
+
+
+async def delete_imported(ip: str) -> None:
+    await redis.hdel(KEY_IMPORTED, ip)
 
 
 async def registered_count() -> int:

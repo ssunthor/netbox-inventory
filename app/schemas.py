@@ -18,3 +18,42 @@ class SightingsResponse(BaseModel):
     ignored: int
     managed: int
     tracked: int
+
+
+class ImportRow(BaseModel):
+    name: str
+    ip: str
+    site: str | None = None
+    role: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+
+
+class ImportRequest(BaseModel):
+    rows: list[ImportRow] = Field(default_factory=list)
+
+
+class ImportResult(BaseModel):
+    status: str
+    name: str | None = None
+    ip: str | None = None
+    device_id: int | None = None
+    reason: str | None = None
+
+
+class ImportResponse(BaseModel):
+    total: int
+    created: int
+    skipped: int
+    failed: int
+    results: list[ImportResult] = Field(default_factory=list)
+
+
+class ImportedHostUpdate(BaseModel):
+    """Fields an imported host can be edited on. IP is deliberately excluded -
+    see update_imported_host in netbox_write.py."""
+    name: str | None = None
+    site: str | None = None
+    role: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
