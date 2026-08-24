@@ -202,23 +202,41 @@ async def fetch_all_hosts() -> list:
     return [_normalize_device(d) for d in devices] + [_normalize_vm(v) for v in vms]
 
 
+async def _fetch_ips_by_ids(client: httpx.AsyncClient, base: str, token: str,
+                             param_name: str, ids: list, chunk_size: int = 100) -> list:
+    """IP-addresses assigned to any of the given device/VM ids, chunked to
+    keep query strings reasonable. Filters by id rather than tenant_id -
+    an IP's own tenant tag is frequently missing or wrong (tagged to
+    "gtt-unsorted" or even a different customer entirely) even when it's
+    genuinely assigned to one of our devices, which silently dropped it
+    when this filtered on tenant_id directly."""
+    results = []
+    for i in range(0, len(ids), chunk_size):
+        chunk = ids[i:i + chunk_size]
+        qs = "&".join(f"{param_name}={id_}" for id_ in chunk)
+        results.extend(await _fetch_all(client, base, token, f"/api/ipam/ip-addresses/?{qs}&limit=0"))
+    return results
+
+
 async def fetch_managed_hosts_from_gtt() -> list:
     """The managed-host record of truth, pulled from the GT-T NetBox.
     Attaches every interface-assigned IP (not just primary) so the backend
     can match telemetry hosts seen on any address."""
     base, token = settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN
     qp = settings.GTT_NETBOX_QUERY_PARAMS
-    ip_qp = "limit=0"
     tenant_id = settings.GTT_NETBOX_TENANT_ID or settings.NETBOX_TENANT_ID
     if tenant_id:
         qp = f"tenant_id={tenant_id}&{qp}"
-        # Scopes to IPs tenanted in NetBox; untenanted interface IPs are
-        # missed here but primary IPs still arrive via the device records.
-        ip_qp = f"tenant_id={tenant_id}&{ip_qp}"
     async with _client() as client:
         devices = await _fetch_all(client, base, token, f"/api/dcim/devices/?{qp}")
         vms = await _fetch_all(client, base, token, f"/api/virtualization/virtual-machines/?{qp}")
-        ip_addrs = await _fetch_all(client, base, token, f"/api/ipam/ip-addresses/?{ip_qp}")
+        ip_addrs = []
+        if devices:
+            ip_addrs += await _fetch_ips_by_ids(client, base, token, "device_id",
+                                                 [d["id"] for d in devices])
+        if vms:
+            ip_addrs += await _fetch_ips_by_ids(client, base, token, "virtual_machine_id",
+                                                 [v["id"] for v in vms])
 
     hosts = [_normalize_device(d) for d in devices] + [_normalize_vm(v) for v in vms]
     by_key = {h["host_id"]: h for h in hosts}
