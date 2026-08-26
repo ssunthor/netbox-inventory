@@ -31,6 +31,10 @@ class ImportRow(BaseModel):
 
 class ImportRequest(BaseModel):
     rows: list[ImportRow] = Field(default_factory=list)
+    # When true, a row whose IP matches a previously-imported device updates
+    # that device's fields instead of being skipped. Never applies to a
+    # GTT-managed device match - that always skips regardless of this flag.
+    overwrite: bool = False
 
 
 class ImportResult(BaseModel):
@@ -44,6 +48,7 @@ class ImportResult(BaseModel):
 class ImportResponse(BaseModel):
     total: int
     created: int
+    updated: int = 0
     skipped: int
     failed: int
     results: list[ImportResult] = Field(default_factory=list)

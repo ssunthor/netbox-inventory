@@ -385,6 +385,15 @@ async def update_imported_host(client: httpx.AsyncClient, device_id: int, update
     return {"device_id": device_id, "name": device["name"]}
 
 
+async def overwrite_imported_host(client: httpx.AsyncClient, device_id: int, row: dict) -> dict:
+    """CSV-import overwrite path: a row whose IP matched a previously
+    imported device updates that device's fields instead of being skipped.
+    Delegates the actual patch to update_imported_host - same tag guard,
+    same field-by-field update logic, just reshaped into an import result."""
+    result = await update_imported_host(client, device_id, row)
+    return {"status": "updated", "device_id": device_id, "name": result["name"], "ip": row["ip"]}
+
+
 async def delete_imported_host(client: httpx.AsyncClient, device_id: int) -> None:
     """Delete a CSV-imported device (and drop it from the local registry).
     Guarded the same way as update: refuses anything not tagged

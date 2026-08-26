@@ -78,11 +78,11 @@ async def import_hosts(body: ImportRequest):
     against both the GTT-managed set and previously-imported hosts before
     touching NetBox."""
     ip_index = await store.get_ip_index()
-    imported_ips = {h["ip"] for h in await store.list_imported()}
+    imported_by_ip = {h["ip"]: h["device_id"] for h in await store.list_imported()}
     prefixes = await store.get_prefixes()
     seen_ips = set()
     results = []
-    created = skipped = failed = 0
+    created = updated = skipped = failed = 0
 
     async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
         for row in body.rows:
@@ -93,13 +93,24 @@ async def import_hosts(body: ImportRequest):
                 skipped += 1
                 continue
             seen_ips.add(ip)
+            # A managed-device IP match always skips, overwrite or not - the
+            # override option only ever applies to previously-imported hosts.
             if ip in ip_index:
                 results.append({"status": "skipped", "reason": "already managed", "ip": ip, "name": row_dict["name"]})
                 skipped += 1
                 continue
-            if ip in imported_ips:
-                results.append({"status": "skipped", "reason": "already imported", "ip": ip, "name": row_dict["name"]})
-                skipped += 1
+            if ip in imported_by_ip:
+                if not body.overwrite:
+                    results.append({"status": "skipped", "reason": "already imported", "ip": ip, "name": row_dict["name"]})
+                    skipped += 1
+                    continue
+                try:
+                    result = await netbox_write.overwrite_imported_host(client, imported_by_ip[ip], row_dict)
+                    results.append(result)
+                    updated += 1
+                except Exception as e:
+                    results.append({"status": "failed", "reason": str(e), "ip": ip, "name": row_dict["name"]})
+                    failed += 1
                 continue
             try:
                 result = await netbox_write.import_customer_host(client, row_dict, prefixes)
@@ -112,7 +123,7 @@ async def import_hosts(body: ImportRequest):
                 results.append({"status": "failed", "reason": str(e), "ip": ip, "name": row_dict["name"]})
                 failed += 1
 
-    return {"total": len(body.rows), "created": created, "skipped": skipped, "failed": failed, "results": results}
+    return {"total": len(body.rows), "created": created, "updated": updated, "skipped": skipped, "failed": failed, "results": results}
 
 
 @router.get("/imported")
