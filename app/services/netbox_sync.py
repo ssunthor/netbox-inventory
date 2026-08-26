@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from app.config import settings
-from app.services import netbox, netbox_mirror, store
+from app.services import cve_monitoring, netbox, netbox_mirror, store
 
 logger = logging.getLogger("inventory.sync")
 
@@ -27,6 +27,13 @@ async def run_sync() -> dict:
             # Snapshot is already saved — mirror failures are reported in
             # the result but never fail the sync.
             result["mirror"] = await netbox_mirror.mirror_managed_hosts(hosts)
+        try:
+            # NetBox is the record of truth for the cve_monitoring flag;
+            # re-reading it here lets edits made directly in NetBox win.
+            async with netbox._client() as client:
+                result["cve_monitoring_off"] = await cve_monitoring.refresh_from_netbox(client)
+        except Exception as exc:
+            logger.warning("cve_monitoring refresh failed (keeping cached off-list): %s", exc)
         return result
     except Exception as exc:
         logger.exception("sync failed")

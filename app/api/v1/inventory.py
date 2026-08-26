@@ -4,9 +4,9 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.schemas import (ImportedHostUpdate, ImportRequest, ImportResponse,
-                         SightingsRequest, SightingsResponse)
-from app.services import netbox_mirror, netbox_write, promoter, store
+from app.schemas import (CveMonitoringRequest, ImportedHostUpdate, ImportRequest,
+                         ImportResponse, SightingsRequest, SightingsResponse)
+from app.services import cve_monitoring, netbox_mirror, netbox_write, promoter, store
 from app.services.netbox import fetch_all_hosts
 from app.services.netbox_sync import run_sync
 
@@ -44,6 +44,25 @@ async def post_sightings(body: SightingsRequest):
 async def get_discovered():
     discovered = await store.list_discovered()
     return {"count": len(discovered), "discovered": discovered}
+
+
+@router.delete("/discovered/{ip}")
+async def delete_discovered(ip: str):
+    """Delete a learned host: its auto-registered NetBox device (tag-guarded)
+    plus local sighting/registration tracking. 409 for GTT-managed IPs."""
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.delete_discovered_host(client, ip)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post("/cve-monitoring")
+async def set_cve_monitoring(body: CveMonitoringRequest):
+    """Bulk-toggle the cve_monitoring NetBox custom field. Per-target
+    results; partial failures don't fail the request."""
+    return await cve_monitoring.set_hosts(
+        [t.model_dump() for t in body.targets], body.enabled)
 
 
 @router.get("/status")
@@ -131,6 +150,9 @@ async def get_imported():
     """CSV-imported hosts, served from the local registry (no live NetBox
     call needed)."""
     imported = await store.list_imported()
+    off = await store.get_cve_monitoring_off()
+    for h in imported:
+        h["cve_monitoring"] = f"imported:{h.get('device_id')}" not in off
     return {"count": len(imported), "imported": imported}
 
 
