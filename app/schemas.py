@@ -62,3 +62,17 @@ class ImportedHostUpdate(BaseModel):
     role: str | None = None
     manufacturer: str | None = None
     model: str | None = None
+
+
+class CveMonitoringTarget(BaseModel):
+    """One host to toggle. host_id is "device:N"/"vm:N": for
+    source="managed" that is the GTT host_id (resolved to the customer
+    NetBox through the mirror map); for source="imported" N is the customer
+    NetBox device id as listed by /inventory/imported."""
+    host_id: str
+    source: str = "managed"
+
+
+class CveMonitoringRequest(BaseModel):
+    targets: list[CveMonitoringTarget] = Field(default_factory=list)
+    enabled: bool

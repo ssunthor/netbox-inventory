@@ -14,6 +14,9 @@ never shared with the backend's morpheus:* keys in DB 0):
   inv:nbids               hash    cache of ensured NetBox object ids (role/type/tag/site)
   inv:mirror              hash    host_id -> JSON {id, fp}: customer-NetBox id and
                                   content fingerprint of each mirrored managed host
+  inv:cve_monitoring_off  set     hosts excluded from CVE scanning ("device:12" GTT
+                                  host_ids for managed, "imported:{device_id}" for
+                                  CSV-imported); cache of the NetBox custom field
   inv:location            hash    cmd segment_id -> formatted address from CMD (never
                                   invalidated - addresses don't change)
   inv:imported            hash    ip -> JSON {device_id, name, ip, site, role,
@@ -35,6 +38,7 @@ KEY_META = "inv:meta"
 KEY_REGISTERED = "inv:registered"
 KEY_NBIDS = "inv:nbids"
 KEY_MIRROR = "inv:mirror"
+KEY_CVE_OFF = "inv:cve_monitoring_off"
 KEY_LOCATION = "inv:location"
 KEY_IMPORTED = "inv:imported"
 SIGHT_PREFIX = "inv:sight:"
@@ -88,12 +92,16 @@ async def _get_json(key: str, default):
 
 async def get_managed_payload() -> dict:
     meta = await get_meta()
+    hosts = await _get_json(KEY_HOSTS, [])
+    off = await get_cve_monitoring_off()
+    for h in hosts:
+        h["cve_monitoring"] = h.get("host_id") not in off
     return {
         "version": meta["version"],
         "synced_at": meta["synced_at"],
         "stale": meta["stale"],
         "count": meta["host_count"],
-        "hosts": await _get_json(KEY_HOSTS, []),
+        "hosts": hosts,
         "ip_index": await _get_json(KEY_IP_INDEX, {}),
         "name_index": await _get_json(KEY_NAME_INDEX, {}),
         "prefixes": await _get_json(KEY_PREFIXES, []),
@@ -230,6 +238,33 @@ async def mark_promotion_failed(ip: str, error: str) -> None:
         await redis.hset(key, "last_error", error[:300])
 
 
+async def get_registered(ip: str) -> dict | None:
+    raw = await redis.hget(KEY_REGISTERED, ip)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+async def delete_registered(ip: str) -> None:
+    """Forget an auto-registered host. mark_registered added the IP to the
+    shared ip_index (so the backend stamps it managed); that entry must go
+    too, or the deleted host would still classify as managed until the next
+    GTT sync rebuilds the index."""
+    await redis.hdel(KEY_REGISTERED, ip)
+    ip_index = await get_ip_index()
+    if ip in ip_index:
+        del ip_index[ip]
+        await redis.set(KEY_IP_INDEX, json.dumps(ip_index))
+        await redis.hincrby(KEY_META, "version", 1)
+
+
+async def delete_sighting(ip: str) -> None:
+    await redis.delete(f"{SIGHT_PREFIX}{ip}")
+
+
 # --- CSV-imported host bookkeeping -------------------------------------------
 
 async def mark_imported(ip: str, device_id: int | None, name: str, row: dict) -> None:
@@ -301,6 +336,41 @@ async def set_mirror_entry(host_id: str, nbid: int, fp: str) -> None:
 
 async def delete_mirror_entry(host_id: str) -> None:
     await redis.hdel(KEY_MIRROR, host_id)
+
+
+# --- CVE-monitoring flag cache ----------------------------------------------
+# Off-list entries are namespaced to avoid id collisions between the two
+# categories: managed hosts use their GTT host_id ("device:12" / "vm:3"),
+# CSV-imported hosts use "imported:{customer NetBox device id}".
+
+
+async def get_cve_monitoring_off() -> set:
+    return set(await redis.smembers(KEY_CVE_OFF))
+
+
+async def set_cve_monitoring(keys: list[str], enabled: bool) -> None:
+    if not keys:
+        return
+    if enabled:
+        await redis.srem(KEY_CVE_OFF, *keys)
+    else:
+        await redis.sadd(KEY_CVE_OFF, *keys)
+
+
+async def replace_cve_monitoring_off(keys: set) -> None:
+    """Atomic rebuild from a NetBox re-read (NetBox is the record of truth;
+    out-of-band edits made directly in NetBox win at every sync)."""
+    pipe = redis.pipeline()
+    pipe.delete(KEY_CVE_OFF)
+    if keys:
+        pipe.sadd(KEY_CVE_OFF, *keys)
+    await pipe.execute()
+
+
+async def bump_version() -> int:
+    """Invalidate the managed-snapshot version so the backend's
+    since_version poll sees a change on its next cycle."""
+    return int(await redis.hincrby(KEY_META, "version", 1))
 
 
 # --- NetBox object-id cache -------------------------------------------------

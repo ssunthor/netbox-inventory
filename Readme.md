@@ -35,6 +35,8 @@ All routes live under `/api/v1`.
 | `/inventory/managed` | GET | Versioned managed-host snapshot (the backend polls this; `?since_version=` short-circuits unchanged polls) |
 | `/inventory/sightings` | POST | Batched telemetry sightings from the backend |
 | `/inventory/discovered` | GET | Discovered hosts with tracking/eligible/registered/failed status |
+| `/inventory/discovered/{ip}` | DELETE | Delete a learned host: tag-guarded NetBox device delete plus tracking cleanup; 409 for GTT-managed IPs |
+| `/inventory/cve-monitoring` | POST | Bulk-toggle the `cve_monitoring` NetBox custom field (record of truth; cached off-list stamps the payloads) |
 | `/inventory/status` | GET | Sync and promoter health |
 | `/inventory/sync` | POST | Trigger an immediate sync |
 | `/inventory/hosts` | GET | Live customer-NetBox view (ops/debug) |

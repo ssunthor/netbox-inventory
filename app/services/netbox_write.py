@@ -406,4 +406,48 @@ async def delete_imported_host(client: httpx.AsyncClient, device_id: int) -> Non
     old = await store.get_imported_by_device_id(device_id)
     if old:
         await store.delete_imported(old["ip"])
+    # Drop any cve-monitoring off-list entry so a future device reusing this
+    # id doesn't inherit a stale "off" state.
+    await store.set_cve_monitoring([f"imported:{device_id}"], True)
     logger.info("deleted imported host device %d", device_id)
+
+
+async def delete_discovered_host(client: httpx.AsyncClient, ip: str) -> dict:
+    """Delete a learned (telemetry-discovered) host: the auto-registered
+    NetBox device when one exists, plus the local sighting/registration
+    tracking. Two guards: a GTT-managed IP is refused outright
+    (PermissionError -> 409 upstream), and a NetBox device is only ever
+    deleted when it still carries the halo-discovered tag - a registration
+    record pointing at a re-purposed or manually-retagged device leaves the
+    NetBox object alone and only clears our tracking."""
+    ip_index = await store.get_ip_index()
+    registration = await store.get_registered(ip)
+    # mark_registered() adds auto-registered hosts to ip_index too, so the
+    # managed test must exclude anything we registered ourselves.
+    if ip in ip_index and not registration:
+        raise PermissionError(f"{ip} is a GTT-managed host and cannot be deleted")
+
+    deleted_device_id = None
+    device_id = (registration or {}).get("device_id")
+    if device_id:
+        resp = await client.get(_url(f"/api/dcim/devices/{device_id}/"), headers=_headers())
+        if resp.status_code != 404:
+            _check(resp)
+            tags = {t.get("slug") for t in (resp.json().get("tags") or [])}
+            if DISCOVERY_TAG["slug"] in tags:
+                dresp = await client.delete(
+                    _url(f"/api/dcim/devices/{device_id}/"), headers=_headers())
+                if dresp.status_code not in (204, 404):
+                    _check(dresp)
+                deleted_device_id = device_id
+            else:
+                logger.warning(
+                    "registered device %d for %s no longer carries the %s tag; "
+                    "leaving the NetBox record in place", device_id, ip,
+                    DISCOVERY_TAG["slug"])
+
+    await store.delete_registered(ip)
+    await store.delete_sighting(ip)
+    logger.info("deleted discovered host %s (netbox device: %s)",
+                ip, deleted_device_id or "none")
+    return {"ip": ip, "netbox_device_deleted": deleted_device_id}
