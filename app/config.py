@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     CMD_CLIENT_SECRET: str = ""
     CMD_SCOPE: str = ""
 
+    # Nominatim-compatible geocoder used to place CMD-derived sites on the
+    # dashboard map (results cached permanently in Redis). Set
+    # GEOCODE_ENABLED=false for air-gapped deployments; sites then simply
+    # have no coordinates and stay off the map.
+    GEOCODE_ENABLED: bool = True
+    GEOCODE_URL: str = "https://nominatim.openstreetmap.org/search"
+
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0

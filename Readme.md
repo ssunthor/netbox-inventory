@@ -25,6 +25,15 @@ sync and reconciles it with what telemetry actually sees.
   `Discovered`, device type `Unknown`, tag `halo-discovered`, site inferred
   from IP prefix, IP attached and set as primary). Disabled by default via
   `DISCOVERY_AUTOCREATE_ENABLED`.
+- **Network locations** — manual subnet→site labels saved from the
+  dashboard's Destinations page. Stored in Redis (`inv:prefixes:manual`) so
+  they survive syncs, and merged over the NetBox-synced prefix list in every
+  served payload (a manual label wins on the same prefix). Each sync also
+  rebuilds a site list (`inv:sites`) with best-effort coordinates for map
+  plotting: a DCIM site record's own latitude/longitude when set, otherwise
+  the site's street address geocoded through a Nominatim-compatible endpoint
+  (`GEOCODE_URL`, cached permanently in `inv:geocode`; disable with
+  `GEOCODE_ENABLED=false` for air-gapped deployments).
 
 ## API
 
@@ -37,6 +46,9 @@ All routes live under `/api/v1`.
 | `/inventory/discovered` | GET | Discovered hosts with tracking/eligible/registered/failed status |
 | `/inventory/discovered/{ip}` | DELETE | Delete a learned host: tag-guarded NetBox device delete plus tracking cleanup; 409 for GTT-managed IPs |
 | `/inventory/cve-monitoring` | POST | Bulk-toggle the `cve_monitoring` NetBox custom field (record of truth; cached off-list stamps the payloads) |
+| `/inventory/network-locations` | GET | Manual subnet→site labels, the merged prefix list, and known sites with coordinates |
+| `/inventory/network-locations` | POST | Label subnets with a site (`{"prefixes": [...], "site_name": ...}`; upserts) |
+| `/inventory/network-locations` | DELETE | Remove one manual label (`?prefix=CIDR`) |
 | `/inventory/status` | GET | Sync and promoter health |
 | `/inventory/sync` | POST | Trigger an immediate sync |
 | `/inventory/hosts` | GET | Live customer-NetBox view (ops/debug) |

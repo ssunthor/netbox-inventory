@@ -20,7 +20,7 @@ import httpx
 
 from app.config import settings
 from app.services import netbox_write, store
-from app.services.netbox import _slugify
+from app.services.netbox import slugify
 
 logger = logging.getLogger("inventory.mirror")
 
@@ -61,7 +61,7 @@ def _base_path(kind: str) -> str:
 
 async def _ensure_named(client: httpx.AsyncClient, kind: str, name: str,
                         api_path: str, extra: dict | None = None) -> int:
-    slug = _slugify(name)
+    slug = slugify(name)
     return await netbox_write._ensure(
         client, f"{kind}:{slug}", f"{api_path}?slug={slug}", api_path,
         {"name": name, "slug": slug, **(extra or {})})
@@ -69,7 +69,7 @@ async def _ensure_named(client: httpx.AsyncClient, kind: str, name: str,
 
 async def _ensure_device_type(client: httpx.AsyncClient, model: str,
                               manufacturer_id: int) -> int:
-    slug = _slugify(model)
+    slug = slugify(model)
     return await netbox_write._ensure(
         client, f"devicetype:{slug}", f"/api/dcim/device-types/?slug={slug}",
         "/api/dcim/device-types/",
@@ -79,7 +79,7 @@ async def _ensure_device_type(client: httpx.AsyncClient, model: str,
 async def _ensure_cluster(client: httpx.AsyncClient, name: str) -> int:
     """Clusters have no slug; look up by name, create under an 'Unknown'
     cluster type when absent."""
-    cache_key = f"cluster:{_slugify(name)}"
+    cache_key = f"cluster:{slugify(name)}"
     cached = await store.get_nbid(cache_key)
     if cached:
         return cached
