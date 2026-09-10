@@ -9,7 +9,7 @@ import httpx
 
 from app.config import settings
 from app.services import classify, store
-from app.services.netbox import _slugify
+from app.services.netbox import slugify
 
 logger = logging.getLogger("inventory.netbox_write")
 
@@ -81,7 +81,7 @@ async def _resolve_tenant_id(client: httpx.AsyncClient) -> int:
     transfer between NetBox instances — NETBOX_TENANT_ID belongs to the
     GT-T instance's scoping and must never be assumed to exist locally."""
     name = settings.NETBOX_CUSTOMER_NAME
-    slug = _slugify(name)
+    slug = slugify(name)
     cached = await store.get_nbid(f"tenant:{slug}")
     if cached:
         return cached
@@ -99,7 +99,7 @@ async def _resolve_tenant_id(client: httpx.AsyncClient) -> int:
             if exc.response.status_code != 400 or b"group" not in exc.response.content:
                 raise
             group_name = settings.NETBOX_TENANT_GROUP
-            group_slug = _slugify(group_name)
+            group_slug = slugify(group_name)
             group_id = await _ensure(
                 client, f"tenantgroup:{group_slug}",
                 f"/api/tenancy/tenant-groups/?slug={group_slug}",
@@ -227,7 +227,7 @@ async def import_customer_host(client: httpx.AsyncClient, row: dict, prefixes: l
 
     role_name = row.get("role")
     if role_name:
-        role_slug = _slugify(role_name)
+        role_slug = slugify(role_name)
         role_id = await _ensure(client, f"role:{role_slug}",
                                 f"/api/dcim/device-roles/?slug={role_slug}",
                                 "/api/dcim/device-roles/",
@@ -239,7 +239,7 @@ async def import_customer_host(client: httpx.AsyncClient, row: dict, prefixes: l
 
     mfr_name = row.get("manufacturer")
     if mfr_name:
-        mfr_slug = _slugify(mfr_name)
+        mfr_slug = slugify(mfr_name)
         mfr_id = await _ensure(client, f"manufacturer:{mfr_slug}",
                                f"/api/dcim/manufacturers/?slug={mfr_slug}",
                                "/api/dcim/manufacturers/", {"name": mfr_name, "slug": mfr_slug})
@@ -250,7 +250,7 @@ async def import_customer_host(client: httpx.AsyncClient, row: dict, prefixes: l
 
     model_name = row.get("model")
     if model_name:
-        model_slug = _slugify(model_name)
+        model_slug = slugify(model_name)
         type_id = await _ensure(client, f"devicetype:{model_slug}",
                                 f"/api/dcim/device-types/?slug={model_slug}",
                                 "/api/dcim/device-types/",
@@ -267,7 +267,7 @@ async def import_customer_host(client: httpx.AsyncClient, row: dict, prefixes: l
 
     site_name = row.get("site")
     if site_name:
-        site_slug = _slugify(site_name)
+        site_slug = slugify(site_name)
         site_id = await _ensure(client, f"site:{site_slug}",
                                 f"/api/dcim/sites/?slug={site_slug}",
                                 "/api/dcim/sites/", {"name": site_name, "slug": site_slug, "status": "active"})
@@ -342,14 +342,14 @@ async def update_imported_host(client: httpx.AsyncClient, device_id: int, update
         patch["name"] = updates["name"]
 
     if "role" in updates and updates["role"]:
-        role_slug = _slugify(updates["role"])
+        role_slug = slugify(updates["role"])
         patch["role"] = await _ensure(client, f"role:{role_slug}",
                                       f"/api/dcim/device-roles/?slug={role_slug}",
                                       "/api/dcim/device-roles/",
                                       {"name": updates["role"], "slug": role_slug, "color": IMPORTED_ROLE["color"]})
 
     if "site" in updates and updates["site"]:
-        site_slug = _slugify(updates["site"])
+        site_slug = slugify(updates["site"])
         patch["site"] = await _ensure(client, f"site:{site_slug}",
                                       f"/api/dcim/sites/?slug={site_slug}",
                                       "/api/dcim/sites/",
@@ -359,12 +359,12 @@ async def update_imported_host(client: httpx.AsyncClient, device_id: int, update
         current_type = device.get("device_type") or {}
         mfr_name = updates.get("manufacturer") or (current_type.get("manufacturer") or {}).get("name")
         model_name = updates.get("model") or current_type.get("model")
-        mfr_slug = _slugify(mfr_name) if mfr_name else "unknown"
+        mfr_slug = slugify(mfr_name) if mfr_name else "unknown"
         mfr_id = await _ensure(client, f"manufacturer:{mfr_slug}",
                                f"/api/dcim/manufacturers/?slug={mfr_slug}",
                                "/api/dcim/manufacturers/",
                                {"name": mfr_name or "Unknown", "slug": mfr_slug})
-        model_slug = _slugify(model_name) if model_name else "unknown"
+        model_slug = slugify(model_name) if model_name else "unknown"
         patch["device_type"] = await _ensure(client, f"devicetype:{model_slug}",
                                              f"/api/dcim/device-types/?slug={model_slug}",
                                              "/api/dcim/device-types/",

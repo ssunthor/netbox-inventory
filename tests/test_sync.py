@@ -76,7 +76,8 @@ async def test_gtt_fetch_pagination_and_interface_ips():
             {"address": "10.9.9.9/32", "assigned_object_type": None, "assigned_object": None},
         ])))
 
-    hosts = await netbox.fetch_managed_hosts_from_gtt()
+    hosts, site_addresses = await netbox.fetch_managed_hosts_from_gtt()
+    assert site_addresses == {}  # no CMD-derived sites in this fixture
     assert len(hosts) == 3  # pagination followed: 2 devices + 1 vm
     fw01 = next(h for h in hosts if h["host_id"] == "device:12")
     assert sorted(fw01["ips"]) == ["10.250.47.10", "10.250.47.11"]
@@ -116,15 +117,19 @@ async def test_run_sync_failure_keeps_last_good(monkeypatch):
     monkeypatch.setattr(settings, "MIRROR_ENABLED", False)
 
     async def good():
-        return [dict(DEVICE_NORM)]
+        return [dict(DEVICE_NORM)], {}
 
     async def good_prefixes():
         return [{"prefix": "10.0.0.0/8", "site": "global", "site_name": "Global"}]
+
+    async def no_sites(hosts, prefixes, site_addresses):
+        return []
 
     DEVICE_NORM = {"kind": "device", "id": 12, "host_id": "device:12",
                    "name": "fw01", "ips": ["10.250.47.10"]}
     monkeypatch.setattr(netbox, "fetch_managed_hosts_from_gtt", good)
     monkeypatch.setattr(netbox, "fetch_prefixes_from_customer", good_prefixes)
+    monkeypatch.setattr(netbox, "build_sites", no_sites)
 
     result = await netbox_sync.run_sync()
     assert result["ok"] and result["version"] == 1
@@ -150,9 +155,12 @@ async def test_run_sync_mirrors_managed_set(monkeypatch):
               "name": "fw01", "ips": ["10.250.47.10"]}]
 
     async def good():
-        return list(hosts)
+        return list(hosts), {}
 
     async def no_prefixes():
+        return []
+
+    async def no_sites(passed_hosts, prefixes, site_addresses):
         return []
 
     mirrored = []
@@ -164,6 +172,7 @@ async def test_run_sync_mirrors_managed_set(monkeypatch):
 
     monkeypatch.setattr(netbox, "fetch_managed_hosts_from_gtt", good)
     monkeypatch.setattr(netbox, "fetch_prefixes_from_customer", no_prefixes)
+    monkeypatch.setattr(netbox, "build_sites", no_sites)
     monkeypatch.setattr(netbox_mirror, "mirror_managed_hosts", fake_mirror)
 
     result = await netbox_sync.run_sync()

@@ -3,6 +3,7 @@ include:
     ref: 'main'
     file:
       - '/collections/Container-Single-Platform-Base.gitlab-ci.yml'
+      - '/collections/Node-Build-Test.gitlab-ci.yml'
 
 variables:
   CONTAINER_BUILD_NAME: $CI_PROJECT_NAME

@@ -64,6 +64,14 @@ class ImportedHostUpdate(BaseModel):
     model: str | None = None
 
 
+class NetworkLocationAssignment(BaseModel):
+    """Manual subnet -> site labels from the dashboard's Destinations page.
+    site (the slug) is derived from site_name when omitted."""
+    prefixes: list[str] = Field(default_factory=list)
+    site_name: str
+    site: str | None = None
+
+
 class CveMonitoringTarget(BaseModel):
     """One host to toggle. host_id is "device:N"/"vm:N": for
     source="managed" that is the GTT host_id (resolved to the customer

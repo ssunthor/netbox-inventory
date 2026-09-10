@@ -15,7 +15,7 @@ async def run_sync() -> dict:
     the customer NetBox, then an atomic swap of the Redis snapshot.
     On any failure the last-good snapshot is left untouched."""
     try:
-        hosts = await netbox.fetch_managed_hosts_from_gtt()
+        hosts, site_addresses = await netbox.fetch_managed_hosts_from_gtt()
         prefixes = await netbox.fetch_prefixes_from_customer()
         ip_index, name_index = netbox.build_indexes(hosts)
         version = await store.save_snapshot(hosts, ip_index, name_index, prefixes)
@@ -23,6 +23,15 @@ async def run_sync() -> dict:
                     len(hosts), len(prefixes), version)
         result = {"ok": True, "version": version,
                   "host_count": len(hosts), "prefix_count": len(prefixes)}
+        try:
+            # Site list (with best-effort coordinates) for the dashboard's
+            # subnet-labelling UI; never fails the sync - the snapshot is
+            # already saved and the last-good site list stays served.
+            sites = await netbox.build_sites(hosts, prefixes, site_addresses)
+            await store.save_sites(sites)
+            result["site_count"] = len(sites)
+        except Exception as exc:
+            logger.warning("site build failed (keeping cached sites): %s", exc)
         if settings.MIRROR_ENABLED:
             # Snapshot is already saved — mirror failures are reported in
             # the result but never fail the sync.

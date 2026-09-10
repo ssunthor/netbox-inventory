@@ -7,6 +7,16 @@ never shared with the backend's morpheus:* keys in DB 0):
   inv:managed:ip_index    string  JSON {bare_ip: host_id}
   inv:managed:name_index  string  JSON {lowercased name/shortname: host_id}
   inv:prefixes            string  JSON [{prefix, site, site_name}] prefixlen-desc
+  inv:prefixes:manual     hash    prefix -> JSON {site, site_name}: user-assigned
+                                  subnet->site labels from the dashboard; survives
+                                  syncs (inv:prefixes is rebuilt wholesale) and is
+                                  merged over it in every served prefix list
+  inv:sites               string  JSON [{site, site_name, latitude, longitude,
+                                  address}] - known sites with best-effort
+                                  coordinates, rebuilt by each sync
+  inv:geocode             hash    address -> JSON {latitude, longitude} from the
+                                  geocoder (never invalidated - addresses don't
+                                  change)
   inv:meta                hash    version, synced_at, last_error, host_count, prefix_count
   inv:sight:{ip}          hash    count, first_seen, last_seen, name, sources, last_error
   inv:registered          hash    ip -> JSON {device_id, name, created_at}
@@ -23,6 +33,7 @@ never shared with the backend's morpheus:* keys in DB 0):
                                   manufacturer, model, created_at}: CSV-imported hosts
 """
 
+import ipaddress
 import json
 import time
 
@@ -34,6 +45,9 @@ KEY_HOSTS = "inv:managed:hosts"
 KEY_IP_INDEX = "inv:managed:ip_index"
 KEY_NAME_INDEX = "inv:managed:name_index"
 KEY_PREFIXES = "inv:prefixes"
+KEY_MANUAL_PREFIXES = "inv:prefixes:manual"
+KEY_SITES = "inv:sites"
+KEY_GEOCODE = "inv:geocode"
 KEY_META = "inv:meta"
 KEY_REGISTERED = "inv:registered"
 KEY_NBIDS = "inv:nbids"
@@ -104,16 +118,87 @@ async def get_managed_payload() -> dict:
         "hosts": hosts,
         "ip_index": await _get_json(KEY_IP_INDEX, {}),
         "name_index": await _get_json(KEY_NAME_INDEX, {}),
-        "prefixes": await _get_json(KEY_PREFIXES, []),
+        "prefixes": await get_prefixes(),
+        "sites": await get_sites(),
     }
 
 
 async def get_prefixes() -> list:
-    return await _get_json(KEY_PREFIXES, [])
+    """Synced NetBox prefixes overlaid with the manual subnet->site labels
+    (a manual label wins on the same prefix), longest-prefix-first."""
+    merged = {p["prefix"]: p for p in await _get_json(KEY_PREFIXES, [])}
+    for entry in await get_manual_prefixes():
+        merged[entry["prefix"]] = entry
+
+    def _plen(entry):
+        try:
+            return ipaddress.ip_network(entry["prefix"], strict=False).prefixlen
+        except (KeyError, ValueError):
+            return -1
+
+    return sorted(merged.values(), key=_plen, reverse=True)
 
 
 async def get_ip_index() -> dict:
     return await _get_json(KEY_IP_INDEX, {})
+
+
+# --- manual subnet -> site labels --------------------------------------------
+
+async def get_manual_prefixes() -> list:
+    raw = await redis.hgetall(KEY_MANUAL_PREFIXES)
+    out = []
+    for prefix, val in raw.items():
+        try:
+            info = json.loads(val)
+        except (ValueError, TypeError):
+            continue
+        out.append({"prefix": prefix, "site": info.get("site"),
+                    "site_name": info.get("site_name"), "manual": True})
+    return out
+
+
+async def set_manual_prefixes(entries: list) -> None:
+    """Upsert user subnet->site assignments ({prefix, site, site_name} each);
+    bumps the snapshot version so the backend's since_version poll re-pulls
+    the merged prefix list immediately."""
+    if not entries:
+        return
+    mapping = {e["prefix"]: json.dumps({"site": e["site"], "site_name": e["site_name"]})
+               for e in entries}
+    await redis.hset(KEY_MANUAL_PREFIXES, mapping=mapping)
+    await bump_version()
+
+
+async def delete_manual_prefix(prefix: str) -> bool:
+    removed = await redis.hdel(KEY_MANUAL_PREFIXES, prefix)
+    if removed:
+        await bump_version()
+    return bool(removed)
+
+
+# --- known sites (for the dashboard's site dropdown / map plotting) ----------
+
+async def get_sites() -> list:
+    return await _get_json(KEY_SITES, [])
+
+
+async def save_sites(sites: list) -> None:
+    await redis.set(KEY_SITES, json.dumps(sites))
+
+
+async def get_geocode(address: str) -> dict | None:
+    raw = await redis.hget(KEY_GEOCODE, address)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+async def set_geocode(address: str, coords: dict) -> None:
+    await redis.hset(KEY_GEOCODE, address, json.dumps(coords))
 
 
 # --- sightings --------------------------------------------------------------

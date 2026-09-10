@@ -1,13 +1,15 @@
 import asyncio
+import ipaddress
 
 import httpx
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
 from app.schemas import (CveMonitoringRequest, ImportedHostUpdate, ImportRequest,
-                         ImportResponse, SightingsRequest, SightingsResponse)
+                         ImportResponse, NetworkLocationAssignment,
+                         SightingsRequest, SightingsResponse)
 from app.services import cve_monitoring, netbox_mirror, netbox_write, promoter, store
-from app.services.netbox import fetch_all_hosts
+from app.services.netbox import fetch_all_hosts, slugify
 from app.services.netbox_sync import run_sync
 
 router = APIRouter()
@@ -55,6 +57,51 @@ async def delete_discovered(ip: str):
             return await netbox_write.delete_discovered_host(client, ip)
         except PermissionError as e:
             raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/network-locations")
+async def get_network_locations():
+    """Everything the dashboard's subnet-labelling UI needs: the manual
+    subnet->site labels (editable), the full merged prefix list (to tell
+    labeled from unlabeled traffic), and the known sites with best-effort
+    coordinates (for map plotting)."""
+    return {
+        "mappings": await store.get_manual_prefixes(),
+        "prefixes": await store.get_prefixes(),
+        "sites": await store.get_sites(),
+    }
+
+
+@router.post("/network-locations")
+async def post_network_locations(body: NetworkLocationAssignment):
+    """Label one or more subnets with a site. Upserts - relabelling an
+    already-labeled prefix just moves it."""
+    site_name = body.site_name.strip()
+    if not site_name:
+        raise HTTPException(status_code=422, detail="site_name is required")
+    entries = []
+    for prefix in body.prefixes:
+        try:
+            net = ipaddress.ip_network(prefix.strip(), strict=False)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"invalid prefix: {prefix}")
+        entries.append({"prefix": str(net),
+                        "site": body.site or slugify(site_name),
+                        "site_name": site_name})
+    if not entries:
+        raise HTTPException(status_code=422, detail="at least one prefix is required")
+    await store.set_manual_prefixes(entries)
+    return {"saved": len(entries), "mappings": await store.get_manual_prefixes()}
+
+
+@router.delete("/network-locations")
+async def delete_network_location(prefix: str):
+    """Remove one manual label (query param - a CIDR's slash doesn't
+    survive as a path segment through every proxy). Only manual labels can
+    be removed; NetBox-synced prefixes are read-only here."""
+    if not await store.delete_manual_prefix(prefix):
+        raise HTTPException(status_code=404, detail=f"no manual label for {prefix}")
+    return {"deleted": prefix}
 
 
 @router.post("/cve-monitoring")
