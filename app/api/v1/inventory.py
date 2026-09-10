@@ -1,11 +1,15 @@
 import asyncio
+import ipaddress
 
-from fastapi import APIRouter
+import httpx
+from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.schemas import SightingsRequest, SightingsResponse
-from app.services import netbox_mirror, promoter, store
-from app.services.netbox import fetch_all_hosts
+from app.schemas import (CveMonitoringRequest, ImportedHostUpdate, ImportRequest,
+                         ImportResponse, NetworkLocationAssignment,
+                         SightingsRequest, SightingsResponse)
+from app.services import cve_monitoring, netbox_mirror, netbox_write, promoter, store
+from app.services.netbox import fetch_all_hosts, slugify
 from app.services.netbox_sync import run_sync
 
 router = APIRouter()
@@ -44,6 +48,70 @@ async def get_discovered():
     return {"count": len(discovered), "discovered": discovered}
 
 
+@router.delete("/discovered/{ip}")
+async def delete_discovered(ip: str):
+    """Delete a learned host: its auto-registered NetBox device (tag-guarded)
+    plus local sighting/registration tracking. 409 for GTT-managed IPs."""
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.delete_discovered_host(client, ip)
+        except PermissionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/network-locations")
+async def get_network_locations():
+    """Everything the dashboard's subnet-labelling UI needs: the manual
+    subnet->site labels (editable), the full merged prefix list (to tell
+    labeled from unlabeled traffic), and the known sites with best-effort
+    coordinates (for map plotting)."""
+    return {
+        "mappings": await store.get_manual_prefixes(),
+        "prefixes": await store.get_prefixes(),
+        "sites": await store.get_sites(),
+    }
+
+
+@router.post("/network-locations")
+async def post_network_locations(body: NetworkLocationAssignment):
+    """Label one or more subnets with a site. Upserts - relabelling an
+    already-labeled prefix just moves it."""
+    site_name = body.site_name.strip()
+    if not site_name:
+        raise HTTPException(status_code=422, detail="site_name is required")
+    entries = []
+    for prefix in body.prefixes:
+        try:
+            net = ipaddress.ip_network(prefix.strip(), strict=False)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"invalid prefix: {prefix}")
+        entries.append({"prefix": str(net),
+                        "site": body.site or slugify(site_name),
+                        "site_name": site_name})
+    if not entries:
+        raise HTTPException(status_code=422, detail="at least one prefix is required")
+    await store.set_manual_prefixes(entries)
+    return {"saved": len(entries), "mappings": await store.get_manual_prefixes()}
+
+
+@router.delete("/network-locations")
+async def delete_network_location(prefix: str):
+    """Remove one manual label (query param - a CIDR's slash doesn't
+    survive as a path segment through every proxy). Only manual labels can
+    be removed; NetBox-synced prefixes are read-only here."""
+    if not await store.delete_manual_prefix(prefix):
+        raise HTTPException(status_code=404, detail=f"no manual label for {prefix}")
+    return {"deleted": prefix}
+
+
+@router.post("/cve-monitoring")
+async def set_cve_monitoring(body: CveMonitoringRequest):
+    """Bulk-toggle the cve_monitoring NetBox custom field. Per-target
+    results; partial failures don't fail the request."""
+    return await cve_monitoring.set_hosts(
+        [t.model_dump() for t in body.targets], body.enabled)
+
+
 @router.get("/status")
 async def get_status():
     meta = await store.get_meta()
@@ -67,3 +135,88 @@ async def get_status():
 async def trigger_sync():
     asyncio.get_running_loop().create_task(run_sync())
     return {"status": "sync scheduled"}
+
+
+@router.post("/import", response_model=ImportResponse)
+async def import_hosts(body: ImportRequest):
+    """Bulk-create customer-provided hosts (parsed/validated by the backend
+    from a CSV) as real NetBox devices, tagged customer-imported. Dedupes
+    against both the GTT-managed set and previously-imported hosts before
+    touching NetBox."""
+    ip_index = await store.get_ip_index()
+    imported_by_ip = {h["ip"]: h["device_id"] for h in await store.list_imported()}
+    prefixes = await store.get_prefixes()
+    seen_ips = set()
+    results = []
+    created = updated = skipped = failed = 0
+
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        for row in body.rows:
+            row_dict = row.model_dump()
+            ip = row_dict["ip"]
+            if ip in seen_ips:
+                results.append({"status": "skipped", "reason": "duplicate ip in request", "ip": ip, "name": row_dict["name"]})
+                skipped += 1
+                continue
+            seen_ips.add(ip)
+            # A managed-device IP match always skips, overwrite or not - the
+            # override option only ever applies to previously-imported hosts.
+            if ip in ip_index:
+                results.append({"status": "skipped", "reason": "already managed", "ip": ip, "name": row_dict["name"]})
+                skipped += 1
+                continue
+            if ip in imported_by_ip:
+                if not body.overwrite:
+                    results.append({"status": "skipped", "reason": "already imported", "ip": ip, "name": row_dict["name"]})
+                    skipped += 1
+                    continue
+                try:
+                    result = await netbox_write.overwrite_imported_host(client, imported_by_ip[ip], row_dict)
+                    results.append(result)
+                    updated += 1
+                except Exception as e:
+                    results.append({"status": "failed", "reason": str(e), "ip": ip, "name": row_dict["name"]})
+                    failed += 1
+                continue
+            try:
+                result = await netbox_write.import_customer_host(client, row_dict, prefixes)
+                results.append(result)
+                if result["status"] == "created":
+                    created += 1
+                else:
+                    skipped += 1
+            except Exception as e:
+                results.append({"status": "failed", "reason": str(e), "ip": ip, "name": row_dict["name"]})
+                failed += 1
+
+    return {"total": len(body.rows), "created": created, "updated": updated, "skipped": skipped, "failed": failed, "results": results}
+
+
+@router.get("/imported")
+async def get_imported():
+    """CSV-imported hosts, served from the local registry (no live NetBox
+    call needed)."""
+    imported = await store.list_imported()
+    off = await store.get_cve_monitoring_off()
+    for h in imported:
+        h["cve_monitoring"] = f"imported:{h.get('device_id')}" not in off
+    return {"count": len(imported), "imported": imported}
+
+
+@router.patch("/imported/{device_id}")
+async def patch_imported(device_id: int, body: ImportedHostUpdate):
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.update_imported_host(client, device_id, updates)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/imported/{device_id}", status_code=204)
+async def delete_imported(device_id: int):
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            await netbox_write.delete_imported_host(client, device_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))

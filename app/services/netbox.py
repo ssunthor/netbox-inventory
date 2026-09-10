@@ -1,12 +1,15 @@
 import asyncio
 import hashlib
+import logging
 import re
 
 import httpx
 
 from app.clients import cmd_client
 from app.config import settings
-from app.services import store
+from app.services import geocode, store
+
+logger = logging.getLogger("inventory.netbox")
 
 # CMD custom field format is "{gnid}-{segment_id}"; segment_id is the trailing int.
 CMD_SEGMENT_ID_PATTERN = re.compile(r"-(\d+)$")
@@ -202,23 +205,45 @@ async def fetch_all_hosts() -> list:
     return [_normalize_device(d) for d in devices] + [_normalize_vm(v) for v in vms]
 
 
-async def fetch_managed_hosts_from_gtt() -> list:
+async def _fetch_ips_by_ids(client: httpx.AsyncClient, base: str, token: str,
+                             param_name: str, ids: list, chunk_size: int = 100) -> list:
+    """IP-addresses assigned to any of the given device/VM ids, chunked to
+    keep query strings reasonable. Filters by id rather than tenant_id -
+    an IP's own tenant tag is frequently missing or wrong (tagged to
+    "gtt-unsorted" or even a different customer entirely) even when it's
+    genuinely assigned to one of our devices, which silently dropped it
+    when this filtered on tenant_id directly."""
+    results = []
+    for i in range(0, len(ids), chunk_size):
+        chunk = ids[i:i + chunk_size]
+        qs = "&".join(f"{param_name}={id_}" for id_ in chunk)
+        results.extend(await _fetch_all(client, base, token, f"/api/ipam/ip-addresses/?{qs}&limit=0"))
+    return results
+
+
+async def fetch_managed_hosts_from_gtt() -> tuple[list, dict]:
     """The managed-host record of truth, pulled from the GT-T NetBox.
     Attaches every interface-assigned IP (not just primary) so the backend
-    can match telemetry hosts seen on any address."""
+    can match telemetry hosts seen on any address.
+
+    Returns (hosts, site_addresses) where site_addresses maps each computed
+    site display name to the CMD street address it was derived from - the
+    only geocodable handle those synthetic sites have (see build_sites)."""
     base, token = settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN
     qp = settings.GTT_NETBOX_QUERY_PARAMS
-    ip_qp = "limit=0"
     tenant_id = settings.GTT_NETBOX_TENANT_ID or settings.NETBOX_TENANT_ID
     if tenant_id:
         qp = f"tenant_id={tenant_id}&{qp}"
-        # Scopes to IPs tenanted in NetBox; untenanted interface IPs are
-        # missed here but primary IPs still arrive via the device records.
-        ip_qp = f"tenant_id={tenant_id}&{ip_qp}"
     async with _client() as client:
         devices = await _fetch_all(client, base, token, f"/api/dcim/devices/?{qp}")
         vms = await _fetch_all(client, base, token, f"/api/virtualization/virtual-machines/?{qp}")
-        ip_addrs = await _fetch_all(client, base, token, f"/api/ipam/ip-addresses/?{ip_qp}")
+        ip_addrs = []
+        if devices:
+            ip_addrs += await _fetch_ips_by_ids(client, base, token, "device_id",
+                                                 [d["id"] for d in devices])
+        if vms:
+            ip_addrs += await _fetch_ips_by_ids(client, base, token, "virtual_machine_id",
+                                                 [v["id"] for v in vms])
 
     hosts = [_normalize_device(d) for d in devices] + [_normalize_vm(v) for v in vms]
     by_key = {h["host_id"]: h for h in hosts}
@@ -252,13 +277,15 @@ async def fetch_managed_hosts_from_gtt() -> list:
     # "addr, city, state, zip") into host["site"] on success; replace it with
     # our short computed name. Disambiguation needs the full batch, so this
     # runs as a second pass after every host is resolved, not inline above.
-    computed = [{**_compute_site_name(h["site"]), "host": h}
+    computed = [{**_compute_site_name(h["site"]), "host": h, "address": h["site"]}
                 for h in hosts if h.get("site") and "," in h["site"]]
     _disambiguate_site_names(computed)
+    site_addresses = {}
     for c in computed:
         c["host"]["site"] = c["display_name"]
+        site_addresses[c["display_name"]] = c["address"]
 
-    return hosts
+    return hosts, site_addresses
 
 
 def build_indexes(hosts: list) -> tuple[dict, dict]:
@@ -278,7 +305,7 @@ def build_indexes(hosts: list) -> tuple[dict, dict]:
     return ip_index, name_index
 
 
-def _slugify(text: str) -> str:
+def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
@@ -305,7 +332,7 @@ async def fetch_prefixes_from_customer() -> list:
             continue
         out.append({
             "prefix": prefix,
-            "site": src.get("slug") or _slugify(name),
+            "site": src.get("slug") or slugify(name),
             "site_name": name,
             "_plen": plen,
         })
@@ -313,3 +340,63 @@ async def fetch_prefixes_from_customer() -> list:
     for entry in out:
         del entry["_plen"]
     return out
+
+
+async def build_sites(hosts: list, prefixes: list, site_addresses: dict) -> list:
+    """One entry per known site, with best-effort coordinates for the
+    dashboard's Destinations map: a real DCIM site record's own
+    latitude/longitude wins; otherwise the site's street address (the CMD
+    address a computed site was derived from, or the DCIM physical_address)
+    is geocoded. Sites with neither stay in the list with null coordinates -
+    they still label subnets, they just can't be plotted."""
+    sites: dict = {}
+
+    def add(name, slug=None, address=None):
+        if not name:
+            return
+        entry = sites.setdefault(name, {
+            "site": slug or slugify(name), "site_name": name,
+            "latitude": None, "longitude": None, "address": None,
+        })
+        if address and not entry["address"]:
+            entry["address"] = address
+
+    for h in hosts:
+        add(h.get("site"), address=site_addresses.get(h.get("site")))
+    for p in prefixes:
+        add(p.get("site_name"), slug=p.get("site"))
+    for m in await store.get_manual_prefixes():
+        add(m.get("site_name"), slug=m.get("site"))
+
+    # Real DCIM site records (either NetBox instance) may carry coordinates,
+    # or at least an address worth geocoding.
+    for base, token in ((settings.NETBOX_URL, settings.NETBOX_TOKEN),
+                        (settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN)):
+        try:
+            async with _client() as client:
+                records = await _fetch_all(client, base, token, "/api/dcim/sites/?limit=0")
+        except Exception as exc:
+            logger.warning("DCIM site fetch failed for %s (skipping): %s", base, exc)
+            continue
+        for rec in records:
+            entry = sites.get(rec.get("name"))
+            if not entry:
+                continue
+            if rec.get("latitude") is not None and rec.get("longitude") is not None:
+                try:
+                    entry["latitude"] = float(rec["latitude"])
+                    entry["longitude"] = float(rec["longitude"])
+                except (TypeError, ValueError):
+                    pass
+            elif rec.get("physical_address") and not entry["address"]:
+                entry["address"] = rec["physical_address"].replace("\n", ", ")
+
+    pending = [e["address"] for e in sites.values()
+               if e["latitude"] is None and e["address"]]
+    coords = await geocode.resolve(pending)
+    for entry in sites.values():
+        if entry["latitude"] is None and entry["address"] in coords:
+            entry["latitude"] = coords[entry["address"]]["latitude"]
+            entry["longitude"] = coords[entry["address"]]["longitude"]
+
+    return sorted(sites.values(), key=lambda e: e["site_name"].lower())
