@@ -1,0 +1,121 @@
+# ---------------------------------------------------------------------------
+# HALO STANDARD CHANGELOG
+#
+# STANDARD CATEGORIES:
+# - "🚀 Architecture & Infrastructure"
+# - "✨ New Features & Enhancements"
+# - "🎨 UI / UX Improvements"
+# - "🐛 Bug Fixes & Resilience"
+# - "🔒 Security & Auth"
+# - "🧹 Refactoring & Chores"
+# ---------------------------------------------------------------------------
+---
+- version: '0.1.5'
+  date: '2026-09-10'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Implemented bulk CSV import for customer hosts, allowing manual creation of NetBox devices with custom roles, manufacturers, and models.'
+        - 'Added manual subnet-to-site labeling capabilities with a merged prefix list that overlays user-defined labels over synced NetBox data.'
+        - 'Introduced a CVE monitoring toggle for hosts, utilizing a NetBox custom field and a Redis cache to manage scan exclusions.'
+        - 'Added automated site geocoding via Nominatim to resolve street addresses into coordinates for dashboard map plotting.'
+        - 'Implemented the ability to delete discovered hosts, including the removal of associated NetBox devices and local tracking records.'
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Resolved an issue where interface IPs were missing from managed host records by switching from tenant-based filtering to explicit device/VM ID lookups.'
+    - category: '🧹 Refactoring & Chores'
+      items:
+        - 'Standardized string slugification across the inventory and mirroring services.'
+
+
+- version: '0.1.4'
+  date: '2026-08-20'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Implemented automated host location resolution by integrating CMD segment data with NetBox site mapping.'
+        - 'Added a site name normalization and disambiguation engine to generate stable, unique site identifiers based on physical addresses.'
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Introduced a Redis-based caching layer for CMD location data to optimize lookup performance and reduce external API dependency.'
+    - category: '🧹 Refactoring & Chores'
+      items:
+        - 'Pinned all project dependencies and the base Docker image to specific versions to ensure environment reproducibility and stability.'
+
+
+- version: '0.1.3'
+  date: '2026-08-19'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Implemented caching for resolved NetBox tenant IDs to reduce redundant API requests.'
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Added support for NetBox tenant groups to ensure compatibility with instances that enforce mandatory group membership for tenants.'
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Implemented automatic retry logic for VM mirroring to resolve site-cluster assignment conflicts in NetBox.'
+
+
+- version: '0.1.2'
+  date: '2026-08-19'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Implemented Redis-backed state management and caching with support for ACL users, database indexing, and pipelines.'
+        - 'Developed a snapshotting system for managed hosts, IP/name indexes, and network prefixes with versioning.'
+        - 'Orchestrated asynchronous background workers for synchronization and promotion loops using a FastAPI lifespan event handler.'
+        - 'Established a GitLab CI/CD pipeline using Kaniko for linux/amd64 container builds and standardized templates.'
+        - 'Implemented a distributed locking mechanism using Redis SET NX to prevent concurrent host promotion.'
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Integrated dual NetBox support, enabling read-only access to GT-T instances and read-write access to Customer instances.'
+        - 'Developed a mirroring service to synchronize managed hosts from GT-T to Customer NetBox using SHA-1 fingerprinting for idempotency.'
+        - 'Implemented an automated host discovery and promotion pipeline with configurable sighting thresholds, durations, and rate limits.'
+        - 'Added integration with CMD GraphQL API for segment-to-site lookups using OAuth2 authentication.'
+        - 'Created an inventory API providing endpoints for live NetBox host retrieval, managed host snapshots, and system status monitoring.'
+        - 'Implemented a telemetry ingestion system for recording batched host sightings and tracking discovery metadata.'
+        - 'Developed a Longest Prefix Match (LPM) algorithm for priority-based IP-to-site resolution.'
+        - 'Added RFC1918 private IPv4 address validation and filtering logic to exclude public, loopback, and multicast addresses.'
+        - 'Implemented tenant-scoped synchronization using tenant IDs and customer names for object ownership.'
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Implemented a robust pagination handler that rebases URLs for NetBox instances behind TLS-terminating proxies.'
+        - 'Added a startup retry strategy to ensure the application does not initialize with an empty store.'
+        - 'Introduced graceful shutdown logic to cancel and await background tasks upon application exit.'
+        - 'Added OS version cleaning logic to normalize placeholder values and prevent invalid CVE queries.'
+        - 'Implemented automated handling of NetBox API name collisions by appending IP addresses to device names.'
+        - 'Enhanced error handling for NetBox API communication to capture detailed field-level error messages.'
+    - category: '🔒 Security & Auth'
+      items:
+        - 'Added support for Redis username and password authentication via ACLs.'
+        - 'Implemented configurable SSL verification for NetBox API clients and health check services.'
+        - 'Integrated OAuth2 authentication for CMD GraphQL API communication.'
+    - category: '🧹 Refactoring & Chores'
+      items:
+        - 'Updated application network port from 5174 to 8020 and reconfigured Uvicorn startup.'
+        - 'Introduced .markdownlint.json and .yamllint.yml to enforce standardized formatting and syntax rules.'
+        - 'Integrated PMD Copy-Paste Detector (CPD) for the application directory.'
+        - 'Expanded testing framework with pytest-asyncio, respx for HTTP mocking, and fakeredis for store mocking.'
+        - 'Standardized data normalization layers for devices and virtual machines to unify platform, role, and site fields.'
+        - 'Added a development-specific dependency management file (requirements-dev.txt).'
+
+
+- version: '0.1.1'
+  date: '2026-08-13'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Established the core application framework using FastAPI and Pydantic for centralized configuration management.'
+        - 'Implemented containerization via Docker to standardize the deployment environment.'
+        - 'Integrated a Redis client to support distributed state and caching.'
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Introduced an Inventory API to fetch and consolidate active devices and virtual machines from NetBox.'
+        - 'Implemented a CMD GraphQL client with OAuth2 token management to retrieve site location details by segment ID.'
+        - 'Added a comprehensive Health Check API to monitor the connectivity of NetBox, CMD, and Redis dependencies.'
