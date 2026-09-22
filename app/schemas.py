@@ -62,6 +62,30 @@ class ImportedHostUpdate(BaseModel):
     role: str | None = None
     manufacturer: str | None = None
     model: str | None = None
+    platform: str | None = None
+    os_version: str | None = None
+
+
+class DiscoveredHostUpdate(BaseModel):
+    """Fields a discovered (auto-registered) host can be edited on."""
+    name: str | None = None
+    site: str | None = None
+    role: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    platform: str | None = None
+    os_version: str | None = None
+
+
+class SiteCreate(BaseModel):
+    name: str
+    status: str = "active"
+    description: str | None = None
+
+
+class SiteUpdate(BaseModel):
+    status: str | None = None
+    description: str | None = None
 
 
 class NetworkLocationAssignment(BaseModel):

@@ -5,9 +5,9 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.schemas import (CveMonitoringRequest, ImportedHostUpdate, ImportRequest,
-                         ImportResponse, NetworkLocationAssignment,
-                         SightingsRequest, SightingsResponse)
+from app.schemas import (CveMonitoringRequest, DiscoveredHostUpdate, ImportedHostUpdate,
+                         ImportRequest, ImportResponse, NetworkLocationAssignment,
+                         SightingsRequest, SightingsResponse, SiteCreate, SiteUpdate)
 from app.services import cve_monitoring, netbox_mirror, netbox_write, promoter, store
 from app.services.netbox import fetch_all_hosts, slugify
 from app.services.netbox_sync import run_sync
@@ -46,6 +46,16 @@ async def post_sightings(body: SightingsRequest):
 async def get_discovered():
     discovered = await store.list_discovered()
     return {"count": len(discovered), "discovered": discovered}
+
+
+@router.patch("/discovered/{device_id}")
+async def patch_discovered(device_id: int, body: DiscoveredHostUpdate):
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.update_discovered_host(client, device_id, updates)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.delete("/discovered/{ip}")
@@ -129,6 +139,22 @@ async def get_status():
             "last_run": promoter.last_run,
         },
     }
+
+
+@router.post("/sites", status_code=201)
+async def create_site(body: SiteCreate):
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        return await netbox_write.create_site(client, body.model_dump())
+
+
+@router.patch("/sites/{slug}")
+async def update_site(slug: str, body: SiteUpdate):
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.update_site(client, slug, updates)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/sync", status_code=202)
