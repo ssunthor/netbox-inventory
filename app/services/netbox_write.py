@@ -516,6 +516,8 @@ async def create_site(client: httpx.AsyncClient, data: dict) -> dict:
                      "tags": [{"id": tag_id}]}
     if description:
         payload["description"] = description
+    if data.get("physical_address"):
+        payload["physical_address"] = data["physical_address"]
     try:
         site = await _post(client, "/api/dcim/sites/", payload)
     except httpx.HTTPStatusError as exc:
@@ -542,6 +544,8 @@ async def update_site(client: httpx.AsyncClient, slug: str, updates: dict) -> di
         patch["status"] = updates["status"]
     if "description" in updates and updates["description"] is not None:
         patch["description"] = updates["description"]
+    if "physical_address" in updates and updates["physical_address"] is not None:
+        patch["physical_address"] = updates["physical_address"]
     if patch:
         site = await _patch(client, f"/api/dcim/sites/{site_id}/", patch)
     else:
@@ -637,7 +641,18 @@ async def update_prefix(client: httpx.AsyncClient, data: dict) -> dict:
 
 async def list_sites(client: httpx.AsyncClient) -> list:
     """Fetch customer-created sites (tagged halo-site) from the customer NetBox."""
-    return await _get_results(client, "/api/dcim/sites/?tag=halo-site&limit=0")
+    raw = await _get_results(client, "/api/dcim/sites/?tag=halo-site&limit=0")
+    return [
+        {
+            "id": s["id"],
+            "name": s["name"],
+            "slug": s["slug"],
+            "status": s.get("status"),
+            "description": s.get("description") or "",
+            "physical_address": s.get("physical_address") or "",
+        }
+        for s in raw
+    ]
 
 
 async def list_device_roles(client: httpx.AsyncClient) -> list:

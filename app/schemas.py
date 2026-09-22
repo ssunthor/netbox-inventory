@@ -81,11 +81,13 @@ class SiteCreate(BaseModel):
     name: str
     status: str = "active"
     description: str | None = None
+    physical_address: str | None = None
 
 
 class SiteUpdate(BaseModel):
     status: str | None = None
     description: str | None = None
+    physical_address: str | None = None
 
 
 class HostCreate(BaseModel):

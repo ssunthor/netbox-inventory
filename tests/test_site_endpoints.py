@@ -140,6 +140,21 @@ def test_create_site_missing_name_returns_422(fake_redis):
     assert resp.status_code == 422
 
 
+@respx.mock
+def test_create_site_with_physical_address(fake_redis):
+    _mock_site_tag()
+    respx.get(f"{NB}/api/dcim/sites/").mock(return_value=Response(200, json=_page([])))
+    post_call = respx.post(f"{NB}/api/dcim/sites/").mock(
+        return_value=Response(201, json=_nb_site(12, "Madrid", "madrid")))
+
+    resp = client.post("/api/v1/inventory/sites",
+                       json={"name": "Madrid", "physical_address": "Calle Mayor 1, 28013 Madrid"})
+
+    assert resp.status_code == 201
+    payload = json.loads(post_call.calls[0].request.content)
+    assert payload["physical_address"] == "Calle Mayor 1, 28013 Madrid"
+
+
 # ---------------------------------------------------------------------------
 # PATCH /sites/{slug}
 # ---------------------------------------------------------------------------
@@ -181,6 +196,44 @@ def test_update_site_not_found_returns_404(fake_redis):
     resp = client.patch("/api/v1/inventory/sites/nonexistent", json={"status": "active"})
 
     assert resp.status_code == 404
+
+
+@respx.mock
+def test_update_site_physical_address(fake_redis):
+    respx.get(f"{NB}/api/dcim/sites/").mock(
+        return_value=Response(200, json=_page([_nb_site(5, "London", "london")])))
+    patch_call = respx.patch(f"{NB}/api/dcim/sites/5/").mock(
+        return_value=Response(200, json=_nb_site(5, "London", "london")))
+
+    resp = client.patch("/api/v1/inventory/sites/london",
+                        json={"physical_address": "1 Canada Square, London, E14 5AB"})
+
+    assert resp.status_code == 200
+    body = json.loads(patch_call.calls[0].request.content)
+    assert body["physical_address"] == "1 Canada Square, London, E14 5AB"
+
+
+@respx.mock
+def test_list_sites_includes_physical_address(fake_redis):
+    site_with_address = {**_nb_site(5, "London", "london"), "physical_address": "1 Canada Square, E14 5AB"}
+    respx.get(f"{NB}/api/dcim/sites/").mock(
+        return_value=Response(200, json=_page([site_with_address])))
+
+    resp = client.get("/api/v1/inventory/sites")
+
+    assert resp.status_code == 200
+    sites = resp.json()["sites"]
+    assert sites[0]["physical_address"] == "1 Canada Square, E14 5AB"
+
+
+@respx.mock
+def test_list_sites_physical_address_empty_when_not_set(fake_redis):
+    respx.get(f"{NB}/api/dcim/sites/").mock(
+        return_value=Response(200, json=_page([_nb_site(5, "London", "london")])))
+
+    resp = client.get("/api/v1/inventory/sites")
+
+    assert resp.json()["sites"][0]["physical_address"] == ""
 
 
 @respx.mock
