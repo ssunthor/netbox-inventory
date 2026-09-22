@@ -91,6 +91,40 @@ async def test_get_managed_returns_snapshot(fake_redis):
     assert "version" in data
 
 
+async def test_get_managed_includes_discovered_ips_when_registered(fake_redis):
+    """Promoted discovered hosts must appear in discovered_ips so the backend
+    can stamp halo_discovered=True instead of managed=True on their topology nodes."""
+    await store.save_snapshot([], {}, {}, [])
+    await store.mark_registered("10.9.9.1", 77, "disc-host")
+
+    resp = client.get("/api/v1/inventory/managed")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "discovered_ips" in data
+    assert data["discovered_ips"]["10.9.9.1"] == "device:77"
+
+
+async def test_get_managed_discovered_ips_empty_when_no_registered(fake_redis):
+    await store.save_snapshot([], {}, {}, [])
+
+    resp = client.get("/api/v1/inventory/managed")
+
+    data = resp.json()
+    assert data["discovered_ips"] == {}
+
+
+async def test_get_managed_discovered_ips_excludes_managed_ips(fake_redis):
+    """GTT-managed hosts in ip_index must NOT appear in discovered_ips."""
+    hosts = [{"host_id": "device:1", "name": "gtt-host"}]
+    await store.save_snapshot(hosts, {"10.0.0.1": "device:1"}, {}, [])
+
+    resp = client.get("/api/v1/inventory/managed")
+
+    data = resp.json()
+    assert "10.0.0.1" not in data["discovered_ips"]
+
+
 async def test_get_managed_since_version_returns_unchanged(fake_redis):
     hosts = [{"host_id": "device:1", "name": "h1"}]
     version = await store.save_snapshot(hosts, {}, {}, [])

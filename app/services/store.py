@@ -110,6 +110,15 @@ async def get_managed_payload() -> dict:
     off = await get_cve_monitoring_off()
     for h in hosts:
         h["cve_monitoring"] = h.get("host_id") not in off
+    registered_raw = await redis.hgetall(KEY_REGISTERED)
+    discovered_ips = {}
+    for ip, raw in registered_raw.items():
+        try:
+            info = json.loads(raw)
+            if info.get("device_id"):
+                discovered_ips[ip] = f"device:{info['device_id']}"
+        except (ValueError, TypeError):
+            pass
     return {
         "version": meta["version"],
         "synced_at": meta["synced_at"],
@@ -120,6 +129,7 @@ async def get_managed_payload() -> dict:
         "name_index": await _get_json(KEY_NAME_INDEX, {}),
         "prefixes": await get_prefixes(),
         "sites": await get_sites(),
+        "discovered_ips": discovered_ips,
     }
 
 
