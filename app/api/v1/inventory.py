@@ -5,9 +5,10 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.schemas import (CveMonitoringRequest, ImportedHostUpdate, ImportRequest,
-                         ImportResponse, NetworkLocationAssignment,
-                         SightingsRequest, SightingsResponse)
+from app.schemas import (CveMonitoringRequest, DiscoveredHostUpdate, HostCreate,
+                         ImportedHostUpdate, ImportRequest, ImportResponse,
+                         NetworkLocationAssignment, PrefixCreate, PrefixUpdate,
+                         SightingsRequest, SightingsResponse, SiteCreate, SiteUpdate)
 from app.services import cve_monitoring, netbox_mirror, netbox_write, promoter, store
 from app.services.netbox import fetch_all_hosts, slugify
 from app.services.netbox_sync import run_sync
@@ -23,6 +24,21 @@ async def get_hosts():
         "hosts": hosts,
         "count": len(hosts)
     }
+
+
+@router.post("/hosts", status_code=201)
+async def create_host(body: HostCreate):
+    """Create a single host in the customer NetBox (single-row import path)."""
+    prefixes = await store.get_prefixes()
+    async with httpx.AsyncClient(timeout=60, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            result = await netbox_write.import_customer_host(
+                client, body.model_dump(exclude_none=True), prefixes)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    if result.get("status") == "skipped":
+        raise HTTPException(status_code=409, detail=result.get("reason", "IP already in use"))
+    return result
 
 
 @router.get("/managed")
@@ -46,6 +62,16 @@ async def post_sightings(body: SightingsRequest):
 async def get_discovered():
     discovered = await store.list_discovered()
     return {"count": len(discovered), "discovered": discovered}
+
+
+@router.patch("/discovered/{device_id}")
+async def patch_discovered(device_id: int, body: DiscoveredHostUpdate):
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.update_discovered_host(client, device_id, updates)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.delete("/discovered/{ip}")
@@ -129,6 +155,22 @@ async def get_status():
             "last_run": promoter.last_run,
         },
     }
+
+
+@router.post("/sites", status_code=201)
+async def create_site(body: SiteCreate):
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        return await netbox_write.create_site(client, body.model_dump())
+
+
+@router.patch("/sites/{slug}")
+async def update_site(slug: str, body: SiteUpdate):
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.update_site(client, slug, updates)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/sync", status_code=202)
@@ -220,3 +262,25 @@ async def delete_imported(device_id: int):
             await netbox_write.delete_imported_host(client, device_id)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/prefixes", status_code=201)
+async def create_prefix(body: PrefixCreate):
+    """Create a prefix/subnet in the customer NetBox IPAM."""
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.create_prefix(
+                client, body.model_dump(exclude_none=True))
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.patch("/prefixes")
+async def update_prefix(body: PrefixUpdate):
+    """Edit an existing prefix in the customer NetBox IPAM."""
+    data = body.model_dump(exclude_none=True)
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.update_prefix(client, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))

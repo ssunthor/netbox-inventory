@@ -371,6 +371,17 @@ async def update_imported_host(client: httpx.AsyncClient, device_id: int, update
                                              {"model": model_name or "Unknown", "slug": model_slug,
                                               "manufacturer": mfr_id})
 
+    if "platform" in updates and updates["platform"]:
+        platform_slug = slugify(updates["platform"])
+        patch["platform"] = await _ensure(client, f"platform:{platform_slug}",
+                                          f"/api/dcim/platforms/?slug={platform_slug}",
+                                          "/api/dcim/platforms/",
+                                          {"name": updates["platform"], "slug": platform_slug})
+
+    if "os_version" in updates and updates["os_version"]:
+        # os_version is stored as a NetBox custom field (os_build for DCIM devices).
+        patch.setdefault("custom_fields", {})["os_build"] = updates["os_version"]
+
     if patch:
         device = await _patch(client, f"/api/dcim/devices/{device_id}/", patch)
 
@@ -412,6 +423,119 @@ async def delete_imported_host(client: httpx.AsyncClient, device_id: int) -> Non
     logger.info("deleted imported host device %d", device_id)
 
 
+async def _verify_discovered_device(client: httpx.AsyncClient, device_id: int) -> dict:
+    """Fetch a device and confirm it carries the halo-discovered tag so that
+    update never touches a GTT-managed or customer-imported device."""
+    resp = await client.get(_url(f"/api/dcim/devices/{device_id}/"), headers=_headers())
+    if resp.status_code == 404:
+        raise ValueError(f"device {device_id} not found")
+    _check(resp)
+    device = resp.json()
+    tags = {t.get("slug") for t in (device.get("tags") or [])}
+    if DISCOVERY_TAG["slug"] not in tags:
+        raise ValueError(f"device {device_id} is not a halo-discovered host")
+    return device
+
+
+async def update_discovered_host(client: httpx.AsyncClient, device_id: int, updates: dict) -> dict:
+    """Update a halo-discovered device's metadata in the customer NetBox.
+    Same field set as update_imported_host; guarded by the halo-discovered tag."""
+    device = await _verify_discovered_device(client, device_id)
+    patch: dict = {}
+
+    if "name" in updates and updates["name"]:
+        patch["name"] = updates["name"]
+
+    if "role" in updates and updates["role"]:
+        role_slug = slugify(updates["role"])
+        patch["role"] = await _ensure(client, f"role:{role_slug}",
+                                      f"/api/dcim/device-roles/?slug={role_slug}",
+                                      "/api/dcim/device-roles/",
+                                      {"name": updates["role"], "slug": role_slug,
+                                       "color": DISCOVERED_ROLE["color"]})
+
+    if "site" in updates and updates["site"]:
+        site_slug = slugify(updates["site"])
+        patch["site"] = await _ensure(client, f"site:{site_slug}",
+                                      f"/api/dcim/sites/?slug={site_slug}",
+                                      "/api/dcim/sites/",
+                                      {"name": updates["site"], "slug": site_slug,
+                                       "status": "active"})
+
+    if updates.get("manufacturer") or updates.get("model"):
+        current_type = device.get("device_type") or {}
+        mfr_name = updates.get("manufacturer") or (current_type.get("manufacturer") or {}).get("name")
+        model_name = updates.get("model") or current_type.get("model")
+        mfr_slug = slugify(mfr_name) if mfr_name else "unknown"
+        mfr_id = await _ensure(client, f"manufacturer:{mfr_slug}",
+                               f"/api/dcim/manufacturers/?slug={mfr_slug}",
+                               "/api/dcim/manufacturers/",
+                               {"name": mfr_name or "Unknown", "slug": mfr_slug})
+        model_slug = slugify(model_name) if model_name else "unknown"
+        patch["device_type"] = await _ensure(client, f"devicetype:{model_slug}",
+                                             f"/api/dcim/device-types/?slug={model_slug}",
+                                             "/api/dcim/device-types/",
+                                             {"model": model_name or "Unknown",
+                                              "slug": model_slug, "manufacturer": mfr_id})
+
+    if "platform" in updates and updates["platform"]:
+        platform_slug = slugify(updates["platform"])
+        patch["platform"] = await _ensure(client, f"platform:{platform_slug}",
+                                          f"/api/dcim/platforms/?slug={platform_slug}",
+                                          "/api/dcim/platforms/",
+                                          {"name": updates["platform"], "slug": platform_slug})
+
+    if "os_version" in updates and updates["os_version"]:
+        patch.setdefault("custom_fields", {})["os_build"] = updates["os_version"]
+
+    if patch:
+        device = await _patch(client, f"/api/dcim/devices/{device_id}/", patch)
+
+    logger.info("updated discovered host device %d", device_id)
+    return {"device_id": device_id, "name": device["name"]}
+
+
+async def create_site(client: httpx.AsyncClient, data: dict) -> dict:
+    """Create a site in the customer NetBox, deduplicating by slug."""
+    name = data["name"].strip()
+    slug = slugify(name)
+    status = data.get("status") or "active"
+    description = data.get("description") or ""
+
+    results = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+    if results:
+        site = results[0]
+        await store.set_nbid(f"site:{slug}", site["id"])
+        return {"id": site["id"], "slug": slug, "name": site["name"], "existed": True}
+
+    payload: dict = {"name": name, "slug": slug, "status": status}
+    if description:
+        payload["description"] = description
+    site = await _post(client, "/api/dcim/sites/", payload)
+    await store.set_nbid(f"site:{slug}", site["id"])
+    logger.info("created site %r (id %d)", name, site["id"])
+    return {"id": site["id"], "slug": slug, "name": site["name"], "existed": False}
+
+
+async def update_site(client: httpx.AsyncClient, slug: str, updates: dict) -> dict:
+    """Patch an existing site by slug. Raises ValueError if not found."""
+    results = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+    if not results:
+        raise ValueError(f"site with slug {slug!r} not found")
+    site_id = results[0]["id"]
+    patch: dict = {}
+    if "status" in updates and updates["status"]:
+        patch["status"] = updates["status"]
+    if "description" in updates and updates["description"] is not None:
+        patch["description"] = updates["description"]
+    if patch:
+        site = await _patch(client, f"/api/dcim/sites/{site_id}/", patch)
+    else:
+        site = results[0]
+    logger.info("updated site %r (id %d)", slug, site_id)
+    return {"id": site_id, "slug": slug, "name": site["name"]}
+
+
 async def delete_discovered_host(client: httpx.AsyncClient, ip: str) -> dict:
     """Delete a learned (telemetry-discovered) host: the auto-registered
     NetBox device when one exists, plus the local sighting/registration
@@ -451,3 +575,47 @@ async def delete_discovered_host(client: httpx.AsyncClient, ip: str) -> dict:
     logger.info("deleted discovered host %s (netbox device: %s)",
                 ip, deleted_device_id or "none")
     return {"ip": ip, "netbox_device_deleted": deleted_device_id}
+
+
+async def create_prefix(client: httpx.AsyncClient, data: dict) -> dict:
+    """Create a prefix in the customer NetBox IPAM."""
+    payload: dict = {"prefix": data["prefix"], "status": data.get("status") or "active"}
+    if data.get("description"):
+        payload["description"] = data["description"]
+    if data.get("site_slug"):
+        slug = data["site_slug"]
+        site_id = await _ensure(client, f"site:{slug}",
+                                f"/api/dcim/sites/?slug={slug}",
+                                "/api/dcim/sites/",
+                                {"name": slug, "slug": slug, "status": "active"})
+        payload["site"] = site_id
+    prefix = await _post(client, "/api/ipam/prefixes/", payload)
+    logger.info("created prefix %r (id %d)", data["prefix"], prefix["id"])
+    return prefix
+
+
+async def update_prefix(client: httpx.AsyncClient, data: dict) -> dict:
+    """Update an existing prefix in the customer NetBox IPAM by CIDR.
+    Raises ValueError if the prefix is not found."""
+    prefix_cidr = data["prefix"]
+    results = await _get_results(client, f"/api/ipam/prefixes/?prefix={prefix_cidr}")
+    if not results:
+        raise ValueError(f"prefix {prefix_cidr!r} not found in NetBox")
+    prefix_id = results[0]["id"]
+    patch: dict = {}
+    if data.get("status"):
+        patch["status"] = data["status"]
+    if data.get("description") is not None:
+        patch["description"] = data["description"]
+    if data.get("site_slug"):
+        slug = data["site_slug"]
+        site_id = await _ensure(client, f"site:{slug}",
+                                f"/api/dcim/sites/?slug={slug}",
+                                "/api/dcim/sites/",
+                                {"name": slug, "slug": slug, "status": "active"})
+        patch["site"] = site_id
+    if not patch:
+        return results[0]
+    prefix = await _patch(client, f"/api/ipam/prefixes/{prefix_id}/", patch)
+    logger.info("updated prefix %r (id %d)", prefix_cidr, prefix_id)
+    return prefix
