@@ -19,5 +19,9 @@ variables:
 # falls back to the template's own tmp/$CI_PIPELINE_ID default and then fails
 # to find that image). Non-blocking locally until the shared template is
 # fixed - backend/frontend carry the same override and likely hit this too.
+remove_image:
+  rules:
+    - when: never
+
 update_annotations:
   allow_failure: true
