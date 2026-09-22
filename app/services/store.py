@@ -27,7 +27,7 @@ never shared with the backend's morpheus:* keys in DB 0):
   inv:cve_monitoring_off  set     hosts excluded from CVE scanning ("device:12" GTT
                                   host_ids for managed, "imported:{device_id}" for
                                   CSV-imported); cache of the NetBox custom field
-  inv:location            hash    cmd segment_id -> formatted address from CMD (never
+  inv:location            hash    cmd gnid -> formatted address from CMD (never
                                   invalidated - addresses don't change)
   inv:imported            hash    ip -> JSON {device_id, name, ip, site, role,
                                   manufacturer, model, created_at}: CSV-imported hosts
@@ -471,9 +471,9 @@ async def set_nbid(cache_key: str, nbid: int) -> None:
 
 # --- CMD location cache ------------------------------------------------------
 
-async def get_location(segment_id: str) -> str | None:
-    return await redis.hget(KEY_LOCATION, segment_id)
+async def get_location(gnid: str) -> str | None:
+    return await redis.hget(KEY_LOCATION, gnid)
 
 
-async def set_location(segment_id: str, address: str) -> None:
-    await redis.hset(KEY_LOCATION, segment_id, address)
+async def set_location(gnid: str, address: str) -> None:
+    await redis.hset(KEY_LOCATION, gnid, address)
