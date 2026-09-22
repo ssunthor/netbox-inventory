@@ -157,10 +157,27 @@ async def get_status():
     }
 
 
+@router.get("/sites")
+async def list_sites():
+    """All sites in the customer NetBox."""
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            sites = await netbox_write.list_sites(client)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+    return {"sites": sites, "count": len(sites)}
+
+
 @router.post("/sites", status_code=201)
 async def create_site(body: SiteCreate):
     async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
-        return await netbox_write.create_site(client, body.model_dump())
+        try:
+            return await netbox_write.create_site(client, body.model_dump())
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code if exc.response.status_code in (400, 409, 422) else 502
+            raise HTTPException(status_code=code, detail=exc.args[0])
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
 
 
 @router.patch("/sites/{slug}")
@@ -171,6 +188,9 @@ async def update_site(slug: str, body: SiteUpdate):
             return await netbox_write.update_site(client, slug, updates)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code if exc.response.status_code in (400, 422) else 502
+            raise HTTPException(status_code=code, detail=exc.args[0])
 
 
 @router.post("/sync", status_code=202)

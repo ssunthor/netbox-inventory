@@ -511,7 +511,16 @@ async def create_site(client: httpx.AsyncClient, data: dict) -> dict:
     payload: dict = {"name": name, "slug": slug, "status": status}
     if description:
         payload["description"] = description
-    site = await _post(client, "/api/dcim/sites/", payload)
+    try:
+        site = await _post(client, "/api/dcim/sites/", payload)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 400:
+            # Race condition: site was created between our GET check and POST.
+            retry = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+            if retry:
+                await store.set_nbid(f"site:{slug}", retry[0]["id"])
+                return {"id": retry[0]["id"], "slug": slug, "name": retry[0]["name"], "existed": True}
+        raise
     await store.set_nbid(f"site:{slug}", site["id"])
     logger.info("created site %r (id %d)", name, site["id"])
     return {"id": site["id"], "slug": slug, "name": site["name"], "existed": False}
@@ -619,3 +628,8 @@ async def update_prefix(client: httpx.AsyncClient, data: dict) -> dict:
     prefix = await _patch(client, f"/api/ipam/prefixes/{prefix_id}/", patch)
     logger.info("updated prefix %r (id %d)", prefix_cidr, prefix_id)
     return prefix
+
+
+async def list_sites(client: httpx.AsyncClient) -> list:
+    """Fetch all sites from the customer NetBox."""
+    return await _get_results(client, "/api/dcim/sites/?limit=0")
