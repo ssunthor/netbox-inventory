@@ -11,8 +11,8 @@ from app.services import geocode, store
 
 logger = logging.getLogger("inventory.netbox")
 
-# CMD custom field format is "{gnid}-{segment_id}"; segment_id is the trailing int.
-CMD_SEGMENT_ID_PATTERN = re.compile(r"-(\d+)$")
+# CMD custom field format is "{gnid}-{segment_id}"; gnid is the leading int.
+CMD_GNID_PATTERN = re.compile(r"^(\d+)")
 # Placeholder site name NetBox falls back to when no real location is set.
 NETBOX_GENERIC_SITE_NAME = "CST"
 
@@ -112,8 +112,9 @@ def _normalize_vm(v: dict) -> dict:
 
 
 def _format_site_address(location: dict) -> str | None:
-    parts = [location.get("a_address"), location.get("a_city"),
-             location.get("a_state"), location.get("a_postal_code")]
+    # client_site uses address1/city/state/postal_code
+    parts = [location.get("address1"), location.get("city"),
+             location.get("state"), location.get("postal_code")]
     parts = [p for p in parts if p]
     return ", ".join(parts) if parts else None
 
@@ -129,19 +130,19 @@ async def _resolve_host_location(host: dict, raw: dict, semaphore: asyncio.Semap
     slid = (raw.get("custom_fields") or {}).get("cmd_slid")
     if not slid:
         return
-    match = CMD_SEGMENT_ID_PATTERN.search(str(slid))
+    match = CMD_GNID_PATTERN.match(str(slid))
     if not match:
         return
-    segment_id = match.group(1)
+    gnid = match.group(1)
 
     async with semaphore:
-        cached = await store.get_location(segment_id)
+        cached = await store.get_location(gnid)
         if cached:
             host["site"] = cached
             return
 
         try:
-            location = await cmd_client.get_location_by_segment(int(segment_id))
+            location = await cmd_client.get_location_by_gnid(int(gnid))
         except (httpx.HTTPError, ValueError):
             return
     if not location:
@@ -149,7 +150,7 @@ async def _resolve_host_location(host: dict, raw: dict, semaphore: asyncio.Semap
     address = _format_site_address(location)
     if not address:
         return
-    await store.set_location(segment_id, address)
+    await store.set_location(gnid, address)
     host["site"] = address
 
 
