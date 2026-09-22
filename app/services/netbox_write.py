@@ -20,6 +20,7 @@ DISCOVERY_TAG = {"name": "halo-discovered", "slug": "halo-discovered", "color": 
 UNASSIGNED_SITE = {"name": "Unassigned", "slug": "unassigned", "status": "active"}
 IMPORTED_ROLE = {"name": "Imported", "slug": "imported", "color": "2196f3"}
 IMPORT_TAG = {"name": "customer-imported", "slug": "customer-imported", "color": "2196f3"}
+CUSTOMER_SITE_TAG = {"name": "halo-site", "slug": "halo-site", "color": "4caf50"}
 
 
 def _headers() -> dict:
@@ -508,7 +509,11 @@ async def create_site(client: httpx.AsyncClient, data: dict) -> dict:
         await store.set_nbid(f"site:{slug}", site["id"])
         return {"id": site["id"], "slug": slug, "name": site["name"], "existed": True}
 
-    payload: dict = {"name": name, "slug": slug, "status": status}
+    tag_id = await _ensure(client, "tag:halo-site",
+                           "/api/extras/tags/?slug=halo-site",
+                           "/api/extras/tags/", CUSTOMER_SITE_TAG)
+    payload: dict = {"name": name, "slug": slug, "status": status,
+                     "tags": [{"id": tag_id}]}
     if description:
         payload["description"] = description
     try:
@@ -631,8 +636,8 @@ async def update_prefix(client: httpx.AsyncClient, data: dict) -> dict:
 
 
 async def list_sites(client: httpx.AsyncClient) -> list:
-    """Fetch all sites from the customer NetBox."""
-    return await _get_results(client, "/api/dcim/sites/?limit=0")
+    """Fetch customer-created sites (tagged halo-site) from the customer NetBox."""
+    return await _get_results(client, "/api/dcim/sites/?tag=halo-site&limit=0")
 
 
 async def list_device_roles(client: httpx.AsyncClient) -> list:

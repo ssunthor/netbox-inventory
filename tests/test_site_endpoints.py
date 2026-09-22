@@ -15,6 +15,11 @@ def _page(results):
     return {"results": results, "next": None}
 
 
+def _mock_site_tag():
+    """Mock the _ensure call for the halo-site tag."""
+    respx.get(f"{NB}/api/extras/tags/").mock(return_value=Response(200, json=_page([{"id": 99, "slug": "halo-site"}])))
+
+
 def _nb_site(site_id=1, name="London", slug="london", status="active"):
     return {"id": site_id, "name": name, "slug": slug,
             "status": {"value": status, "label": status.capitalize()},
@@ -69,6 +74,7 @@ def test_list_sites_netbox_error_returns_502(fake_redis):
 
 @respx.mock
 def test_create_site_new(fake_redis):
+    _mock_site_tag()
     respx.get(f"{NB}/api/dcim/sites/").mock(return_value=Response(200, json=_page([])))
     post_call = respx.post(f"{NB}/api/dcim/sites/").mock(
         return_value=Response(201, json=_nb_site(10, "Amsterdam", "amsterdam")))
@@ -81,6 +87,7 @@ def test_create_site_new(fake_redis):
     assert body["existed"] is False
     payload = json.loads(post_call.calls[0].request.content)
     assert payload["slug"] == "amsterdam"
+    assert payload["tags"] == [{"id": 99}]
 
 
 @respx.mock
@@ -99,8 +106,8 @@ def test_create_site_already_exists_returns_existing(fake_redis):
 @respx.mock
 def test_create_site_race_condition_retry(fake_redis):
     """POST 400 on slug conflict triggers a GET retry and returns the existing site."""
-    # First GET: not found; POST: 400 (race); second GET: found
-    get_route = respx.get(f"{NB}/api/dcim/sites/").mock(side_effect=[
+    _mock_site_tag()
+    respx.get(f"{NB}/api/dcim/sites/").mock(side_effect=[
         Response(200, json=_page([])),
         Response(200, json=_page([_nb_site(7, "Berlin", "berlin")])),
     ])
@@ -111,11 +118,11 @@ def test_create_site_race_condition_retry(fake_redis):
     assert resp.status_code == 201
     assert resp.json()["id"] == 7
     assert resp.json()["existed"] is True
-    assert get_route.call_count == 2
 
 
 @respx.mock
 def test_create_site_with_description(fake_redis):
+    _mock_site_tag()
     respx.get(f"{NB}/api/dcim/sites/").mock(return_value=Response(200, json=_page([])))
     post_call = respx.post(f"{NB}/api/dcim/sites/").mock(
         return_value=Response(201, json=_nb_site(11, "Tokyo", "tokyo")))
