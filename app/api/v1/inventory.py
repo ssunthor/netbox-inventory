@@ -5,8 +5,9 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.schemas import (CveMonitoringRequest, DiscoveredHostUpdate, ImportedHostUpdate,
-                         ImportRequest, ImportResponse, NetworkLocationAssignment,
+from app.schemas import (CveMonitoringRequest, DiscoveredHostUpdate, HostCreate,
+                         ImportedHostUpdate, ImportRequest, ImportResponse,
+                         NetworkLocationAssignment, PrefixCreate, PrefixUpdate,
                          SightingsRequest, SightingsResponse, SiteCreate, SiteUpdate)
 from app.services import cve_monitoring, netbox_mirror, netbox_write, promoter, store
 from app.services.netbox import fetch_all_hosts, slugify
@@ -23,6 +24,21 @@ async def get_hosts():
         "hosts": hosts,
         "count": len(hosts)
     }
+
+
+@router.post("/hosts", status_code=201)
+async def create_host(body: HostCreate):
+    """Create a single host in the customer NetBox (single-row import path)."""
+    prefixes = await store.get_prefixes()
+    async with httpx.AsyncClient(timeout=60, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            result = await netbox_write.import_customer_host(
+                client, body.model_dump(exclude_none=True), prefixes)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    if result.get("status") == "skipped":
+        raise HTTPException(status_code=409, detail=result.get("reason", "IP already in use"))
+    return result
 
 
 @router.get("/managed")
@@ -246,3 +262,25 @@ async def delete_imported(device_id: int):
             await netbox_write.delete_imported_host(client, device_id)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/prefixes", status_code=201)
+async def create_prefix(body: PrefixCreate):
+    """Create a prefix/subnet in the customer NetBox IPAM."""
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.create_prefix(
+                client, body.model_dump(exclude_none=True))
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.patch("/prefixes")
+async def update_prefix(body: PrefixUpdate):
+    """Edit an existing prefix in the customer NetBox IPAM."""
+    data = body.model_dump(exclude_none=True)
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            return await netbox_write.update_prefix(client, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))

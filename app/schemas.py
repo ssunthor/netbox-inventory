@@ -88,6 +88,31 @@ class SiteUpdate(BaseModel):
     description: str | None = None
 
 
+class HostCreate(BaseModel):
+    name: str
+    ip: str
+    site: str | None = None
+    role: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    platform: str | None = None
+    os_version: str | None = None
+
+
+class PrefixCreate(BaseModel):
+    prefix: str
+    status: str = "active"
+    site_slug: str | None = None
+    description: str | None = None
+
+
+class PrefixUpdate(BaseModel):
+    prefix: str
+    status: str | None = None
+    site_slug: str | None = None
+    description: str | None = None
+
+
 class NetworkLocationAssignment(BaseModel):
     """Manual subnet -> site labels from the dashboard's Destinations page.
     site (the slug) is derived from site_name when omitted."""

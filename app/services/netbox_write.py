@@ -575,3 +575,47 @@ async def delete_discovered_host(client: httpx.AsyncClient, ip: str) -> dict:
     logger.info("deleted discovered host %s (netbox device: %s)",
                 ip, deleted_device_id or "none")
     return {"ip": ip, "netbox_device_deleted": deleted_device_id}
+
+
+async def create_prefix(client: httpx.AsyncClient, data: dict) -> dict:
+    """Create a prefix in the customer NetBox IPAM."""
+    payload: dict = {"prefix": data["prefix"], "status": data.get("status") or "active"}
+    if data.get("description"):
+        payload["description"] = data["description"]
+    if data.get("site_slug"):
+        slug = data["site_slug"]
+        site_id = await _ensure(client, f"site:{slug}",
+                                f"/api/dcim/sites/?slug={slug}",
+                                "/api/dcim/sites/",
+                                {"name": slug, "slug": slug, "status": "active"})
+        payload["site"] = site_id
+    prefix = await _post(client, "/api/ipam/prefixes/", payload)
+    logger.info("created prefix %r (id %d)", data["prefix"], prefix["id"])
+    return prefix
+
+
+async def update_prefix(client: httpx.AsyncClient, data: dict) -> dict:
+    """Update an existing prefix in the customer NetBox IPAM by CIDR.
+    Raises ValueError if the prefix is not found."""
+    prefix_cidr = data["prefix"]
+    results = await _get_results(client, f"/api/ipam/prefixes/?prefix={prefix_cidr}")
+    if not results:
+        raise ValueError(f"prefix {prefix_cidr!r} not found in NetBox")
+    prefix_id = results[0]["id"]
+    patch: dict = {}
+    if data.get("status"):
+        patch["status"] = data["status"]
+    if data.get("description") is not None:
+        patch["description"] = data["description"]
+    if data.get("site_slug"):
+        slug = data["site_slug"]
+        site_id = await _ensure(client, f"site:{slug}",
+                                f"/api/dcim/sites/?slug={slug}",
+                                "/api/dcim/sites/",
+                                {"name": slug, "slug": slug, "status": "active"})
+        patch["site"] = site_id
+    if not patch:
+        return results[0]
+    prefix = await _patch(client, f"/api/ipam/prefixes/{prefix_id}/", patch)
+    logger.info("updated prefix %r (id %d)", prefix_cidr, prefix_id)
+    return prefix
