@@ -157,6 +157,31 @@ async def get_status():
     }
 
 
+@router.get("/options")
+async def get_options():
+    """FK lookup tables for the host add/edit form: roles, manufacturers,
+    platforms, and device types. All four NetBox calls run in parallel."""
+    async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            roles, manufacturers, platforms, device_types = await asyncio.gather(
+                netbox_write.list_device_roles(client),
+                netbox_write.list_manufacturers(client),
+                netbox_write.list_platforms(client),
+                netbox_write.list_device_types(client),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+    return {
+        "roles": sorted(r["name"] for r in roles),
+        "manufacturers": sorted(m["name"] for m in manufacturers),
+        "platforms": sorted(p["name"] for p in platforms),
+        "device_types": [
+            {"name": dt["model"], "manufacturer": (dt.get("manufacturer") or {}).get("slug", "")}
+            for dt in device_types
+        ],
+    }
+
+
 @router.get("/sites")
 async def list_sites():
     """All sites in the customer NetBox."""

@@ -633,3 +633,19 @@ async def update_prefix(client: httpx.AsyncClient, data: dict) -> dict:
 async def list_sites(client: httpx.AsyncClient) -> list:
     """Fetch all sites from the customer NetBox."""
     return await _get_results(client, "/api/dcim/sites/?limit=0")
+
+
+async def list_device_roles(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/device-roles/?limit=0")
+
+
+async def list_manufacturers(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/manufacturers/?limit=0")
+
+
+async def list_platforms(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/platforms/?limit=0")
+
+
+async def list_device_types(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/device-types/?limit=200")
