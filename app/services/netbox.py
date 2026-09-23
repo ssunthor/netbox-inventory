@@ -343,14 +343,20 @@ async def fetch_prefixes_from_customer() -> list:
     return out
 
 
-async def build_sites(hosts: list, prefixes: list, site_addresses: dict) -> list:
-    """One entry per known site (managed-host sites, prefix sites, manual
-    labels, and every customer DCIM site), with best-effort coordinates for
-    the dashboard's Destinations map: a real DCIM site record's own
-    latitude/longitude wins; otherwise the site's street address (the CMD
-    address a computed site was derived from, or the DCIM physical_address)
-    is geocoded. Sites with neither stay in the list with null coordinates -
-    they still label subnets, they just can't be plotted."""
+async def build_sites(hosts: list, site_addresses: dict) -> list:
+    """One entry per site the Inventory page's Sites tab shows - every
+    customer-created DCIM site (tagged halo-site, the same filter as
+    list_sites) plus every site a managed host is filed under - with
+    best-effort coordinates for the dashboard's Destinations map: a real
+    DCIM site record's own latitude/longitude wins; otherwise the site's
+    street address (the CMD address a computed site was derived from, or the
+    DCIM physical_address) is geocoded. Sites with neither stay in the list
+    with null coordinates - they still label subnets, they just can't be
+    plotted.
+
+    Names that only appear as the owner of a NetBox prefix (scope / tenant)
+    or of a manual subnet label are deliberately not listed: they still
+    label traffic, but the map plots only the sites the inventory shows."""
     sites: dict = {}
 
     def add(name, slug=None, address=None):
@@ -365,21 +371,18 @@ async def build_sites(hosts: list, prefixes: list, site_addresses: dict) -> list
 
     for h in hosts:
         add(h.get("site"), address=site_addresses.get(h.get("site")))
-    for p in prefixes:
-        add(p.get("site_name"), slug=p.get("site"))
-    for m in await store.get_manual_prefixes():
-        add(m.get("site_name"), slug=m.get("site"))
 
     # Real DCIM site records may carry coordinates, or at least an address
-    # worth geocoding. Every site in the customer NetBox is listed - it is a
-    # real place the customer recorded, and the map plots it whether or not a
-    # host or prefix references it yet. The GT-T NetBox only enriches sites
-    # already known from managed hosts (it holds every customer's sites).
-    for base, token, include_all in ((settings.NETBOX_URL, settings.NETBOX_TOKEN, True),
-                                     (settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN, False)):
+    # worth geocoding. The customer NetBox's halo-site records are all
+    # listed (they are what the Sites tab shows); the GT-T NetBox only
+    # enriches sites already known from managed hosts, since it holds every
+    # customer's sites.
+    for base, token, path, include_all in (
+            (settings.NETBOX_URL, settings.NETBOX_TOKEN, "/api/dcim/sites/?tag=halo-site&limit=0", True),
+            (settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN, "/api/dcim/sites/?limit=0", False)):
         try:
             async with _client() as client:
-                records = await _fetch_all(client, base, token, "/api/dcim/sites/?limit=0")
+                records = await _fetch_all(client, base, token, path)
         except Exception as exc:
             logger.warning("DCIM site fetch failed for %s (skipping): %s", base, exc)
             continue

@@ -77,7 +77,7 @@ async def test_build_sites_coordinates(fake_redis, monkeypatch):
     respx.get("http://netbox.test/api/dcim/sites/").mock(
         return_value=Response(200, json={"results": [
             {"name": "LON8", "latitude": 51.5, "longitude": -0.12},
-            # Not referenced by any host/prefix: listed (and geocoded) anyway
+            # Not referenced by any host: listed (and geocoded) anyway
             {"name": "PRG1", "slug": "prg1", "physical_address": "Na Prikope 1\nPrague"},
         ], "next": None}))
     respx.get("http://gtt.test/api/dcim/sites/").mock(
@@ -89,11 +89,10 @@ async def test_build_sites_coordinates(fake_redis, monkeypatch):
         return_value=Response(200, json=[{"lat": "32.77", "lon": "-96.79"}]))
 
     hosts = [{"site": "ACME-US-TXDAL-MAIN"}, {"site": "LON8"}]
-    prefixes = [{"prefix": "10.0.0.0/8", "site": "lon8", "site_name": "LON8"}]
     site_addresses = {"ACME-US-TXDAL-MAIN": "100 Main St, Dallas, TX, 75201"}
 
     sites = {s["site_name"]: s for s in
-             await netbox.build_sites(hosts, prefixes, site_addresses)}
+             await netbox.build_sites(hosts, site_addresses)}
 
     assert sites["LON8"]["latitude"] == 51.5  # DCIM coordinates win, no geocode
     dal = sites["ACME-US-TXDAL-MAIN"]
@@ -103,7 +102,9 @@ async def test_build_sites_coordinates(fake_redis, monkeypatch):
     prg = sites["PRG1"]
     assert prg["site"] == "prg1" and prg["latitude"] == 32.77  # customer DCIM site, geocoded
     assert "OTHER-CUSTOMER" not in sites
+    # Prefix owners / manual labels don't make the list - only what the Sites tab shows
+    assert set(sites) == {"LON8", "ACME-US-TXDAL-MAIN", "PRG1"}
 
     # Second build hits the inv:geocode cache, not the geocoder
-    await netbox.build_sites(hosts, prefixes, site_addresses)
+    await netbox.build_sites(hosts, site_addresses)
     assert len(geo_route.calls) == 2
