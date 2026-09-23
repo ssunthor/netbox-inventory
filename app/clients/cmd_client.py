@@ -42,12 +42,6 @@ query GetClientSiteAddress($siteId: Int!) {
     city
     state
     postal_code
-    country_id
-    country {
-      code
-      iso3
-      name
-    }
   }
 }
 """
