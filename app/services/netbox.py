@@ -12,8 +12,8 @@ from app.services import geocode, store
 
 logger = logging.getLogger("inventory.netbox")
 
-# CMD custom field format is "{gnid}-{segment_id}"; gnid is the leading int.
-CMD_GNID_PATTERN = re.compile(r"^(\d+)")
+# CMD custom field format is "{segment_id}-{gnid}"; gnid is the trailing int.
+CMD_GNID_PATTERN = re.compile(r"-(\d+)$")
 # Placeholder site name NetBox falls back to when no real location is set.
 NETBOX_GENERIC_SITE_NAME = "CST"
 
