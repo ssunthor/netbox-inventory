@@ -89,10 +89,11 @@ async def test_build_sites_coordinates(fake_redis, monkeypatch):
         return_value=Response(200, json=[{"lat": "32.77", "lon": "-96.79"}]))
 
     hosts = [{"site": "ACME-US-TXDAL-MAIN"}, {"site": "LON8"}]
+    prefixes = [{"prefix": "10.0.0.0/8", "site": "cst", "site_name": "CST"}]
     site_addresses = {"ACME-US-TXDAL-MAIN": "100 Main St, Dallas, TX, 75201"}
 
     sites = {s["site_name"]: s for s in
-             await netbox.build_sites(hosts, site_addresses)}
+             await netbox.build_sites(hosts, prefixes, site_addresses)}
 
     assert sites["LON8"]["latitude"] == 51.5  # DCIM coordinates win, no geocode
     dal = sites["ACME-US-TXDAL-MAIN"]
@@ -102,9 +103,10 @@ async def test_build_sites_coordinates(fake_redis, monkeypatch):
     prg = sites["PRG1"]
     assert prg["site"] == "prg1" and prg["latitude"] == 32.77  # customer DCIM site, geocoded
     assert "OTHER-CUSTOMER" not in sites
-    # Prefix owners / manual labels don't make the list - only what the Sites tab shows
-    assert set(sites) == {"LON8", "ACME-US-TXDAL-MAIN", "PRG1"}
+    # Prefix owners are catalogued too (no coordinates until a DCIM record or address exists)
+    assert set(sites) == {"LON8", "ACME-US-TXDAL-MAIN", "PRG1", "CST"}
+    assert sites["CST"]["site"] == "cst" and sites["CST"]["latitude"] is None
 
     # Second build hits the inv:geocode cache, not the geocoder
-    await netbox.build_sites(hosts, site_addresses)
+    await netbox.build_sites(hosts, prefixes, site_addresses)
     assert len(geo_route.calls) == 2

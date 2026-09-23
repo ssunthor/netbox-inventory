@@ -29,10 +29,11 @@ sync and reconciles it with what telemetry actually sees.
   dashboard's Destinations page. Stored in Redis (`inv:prefixes:manual`) so
   they survive syncs, and merged over the NetBox-synced prefix list in every
   served payload (a manual label wins on the same prefix). Each sync also
-  rebuilds a site list (`inv:sites`) - the same sites the dashboard's
-  Sites tab shows: every customer-created (`halo-site`) DCIM site plus any
-  site a managed host is filed under - with
-  best-effort coordinates for map plotting: a DCIM site record's own
+  rebuilds a site coordinate catalogue (`inv:sites`) - every site name seen
+  in managed hosts, prefix owners, manual labels, and the customer DCIM
+  sites - with best-effort coordinates. The dashboard decides which sites
+  to plot (those on its Inventory Sites tab) and looks coordinates up here
+  by name or slug. Coordinates are a DCIM site record's own
   latitude/longitude when set, otherwise
   the site's street address geocoded through a Nominatim-compatible endpoint
   (`GEOCODE_URL`, cached permanently in `inv:geocode`; disable with

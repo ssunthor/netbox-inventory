@@ -27,7 +27,7 @@ async def run_sync() -> dict:
             # Site list (with best-effort coordinates) for the dashboard's
             # subnet-labelling UI; never fails the sync - the snapshot is
             # already saved and the last-good site list stays served.
-            sites = await netbox.build_sites(hosts, site_addresses)
+            sites = await netbox.build_sites(hosts, prefixes, site_addresses)
             await store.save_sites(sites)
             result["site_count"] = len(sites)
         except Exception as exc:

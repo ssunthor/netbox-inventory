@@ -122,7 +122,7 @@ async def test_run_sync_failure_keeps_last_good(monkeypatch):
     async def good_prefixes():
         return [{"prefix": "10.0.0.0/8", "site": "global", "site_name": "Global"}]
 
-    async def no_sites(hosts, site_addresses):
+    async def no_sites(hosts, prefixes, site_addresses):
         return []
 
     DEVICE_NORM = {"kind": "device", "id": 12, "host_id": "device:12",
@@ -160,7 +160,7 @@ async def test_run_sync_mirrors_managed_set(monkeypatch):
     async def no_prefixes():
         return []
 
-    async def no_sites(passed_hosts, site_addresses):
+    async def no_sites(passed_hosts, prefixes, site_addresses):
         return []
 
     mirrored = []
