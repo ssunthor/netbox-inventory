@@ -344,8 +344,9 @@ async def fetch_prefixes_from_customer() -> list:
 
 
 async def build_sites(hosts: list, prefixes: list, site_addresses: dict) -> list:
-    """One entry per known site, with best-effort coordinates for the
-    dashboard's Destinations map: a real DCIM site record's own
+    """One entry per known site (managed-host sites, prefix sites, manual
+    labels, and every customer DCIM site), with best-effort coordinates for
+    the dashboard's Destinations map: a real DCIM site record's own
     latitude/longitude wins; otherwise the site's street address (the CMD
     address a computed site was derived from, or the DCIM physical_address)
     is geocoded. Sites with neither stay in the list with null coordinates -
@@ -369,10 +370,13 @@ async def build_sites(hosts: list, prefixes: list, site_addresses: dict) -> list
     for m in await store.get_manual_prefixes():
         add(m.get("site_name"), slug=m.get("site"))
 
-    # Real DCIM site records (either NetBox instance) may carry coordinates,
-    # or at least an address worth geocoding.
-    for base, token in ((settings.NETBOX_URL, settings.NETBOX_TOKEN),
-                        (settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN)):
+    # Real DCIM site records may carry coordinates, or at least an address
+    # worth geocoding. Every site in the customer NetBox is listed - it is a
+    # real place the customer recorded, and the map plots it whether or not a
+    # host or prefix references it yet. The GT-T NetBox only enriches sites
+    # already known from managed hosts (it holds every customer's sites).
+    for base, token, include_all in ((settings.NETBOX_URL, settings.NETBOX_TOKEN, True),
+                                     (settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN, False)):
         try:
             async with _client() as client:
                 records = await _fetch_all(client, base, token, "/api/dcim/sites/?limit=0")
@@ -381,6 +385,9 @@ async def build_sites(hosts: list, prefixes: list, site_addresses: dict) -> list
             continue
         for rec in records:
             entry = sites.get(rec.get("name"))
+            if not entry and include_all:
+                add(rec.get("name"), slug=rec.get("slug"))
+                entry = sites.get(rec.get("name"))
             if not entry:
                 continue
             if rec.get("latitude") is not None and rec.get("longitude") is not None:
