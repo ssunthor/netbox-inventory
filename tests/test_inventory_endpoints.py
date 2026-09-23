@@ -62,6 +62,8 @@ def test_patch_discovered_netbox_404_returns_404(fake_redis):
 
 @respx.mock
 def test_post_sites_creates_new(fake_redis):
+    respx.get(f"{NB}/api/extras/tags/").mock(
+        return_value=Response(200, json=_page([{"id": 99, "slug": "halo-site"}])))
     respx.get(f"{NB}/api/dcim/sites/").mock(return_value=Response(200, json=_page([])))
     respx.post(f"{NB}/api/dcim/sites/").mock(
         return_value=Response(201, json={"id": 50, "name": "Amsterdam", "slug": "amsterdam"}))

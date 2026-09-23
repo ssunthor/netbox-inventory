@@ -27,7 +27,7 @@ never shared with the backend's morpheus:* keys in DB 0):
   inv:cve_monitoring_off  set     hosts excluded from CVE scanning ("device:12" GTT
                                   host_ids for managed, "imported:{device_id}" for
                                   CSV-imported); cache of the NetBox custom field
-  inv:location            hash    cmd segment_id -> formatted address from CMD (never
+  inv:location            hash    cmd gnid -> formatted address from CMD (never
                                   invalidated - addresses don't change)
   inv:imported            hash    ip -> JSON {device_id, name, ip, site, role,
                                   manufacturer, model, created_at}: CSV-imported hosts
@@ -110,6 +110,15 @@ async def get_managed_payload() -> dict:
     off = await get_cve_monitoring_off()
     for h in hosts:
         h["cve_monitoring"] = h.get("host_id") not in off
+    registered_raw = await redis.hgetall(KEY_REGISTERED)
+    discovered_ips = {}
+    for ip, raw in registered_raw.items():
+        try:
+            info = json.loads(raw)
+            if info.get("device_id"):
+                discovered_ips[ip] = f"device:{info['device_id']}"
+        except (ValueError, TypeError):
+            pass
     return {
         "version": meta["version"],
         "synced_at": meta["synced_at"],
@@ -120,6 +129,7 @@ async def get_managed_payload() -> dict:
         "name_index": await _get_json(KEY_NAME_INDEX, {}),
         "prefixes": await get_prefixes(),
         "sites": await get_sites(),
+        "discovered_ips": discovered_ips,
     }
 
 
@@ -471,9 +481,9 @@ async def set_nbid(cache_key: str, nbid: int) -> None:
 
 # --- CMD location cache ------------------------------------------------------
 
-async def get_location(segment_id: str) -> str | None:
-    return await redis.hget(KEY_LOCATION, segment_id)
+async def get_location(gnid: str) -> str | None:
+    return await redis.hget(KEY_LOCATION, gnid)
 
 
-async def set_location(segment_id: str, address: str) -> None:
-    await redis.hset(KEY_LOCATION, segment_id, address)
+async def set_location(gnid: str, address: str) -> None:
+    await redis.hset(KEY_LOCATION, gnid, address)

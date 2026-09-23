@@ -186,6 +186,8 @@ async def test_update_discovered_platform_and_os_version(fake_redis):
 
 @respx.mock
 async def test_create_site_new(fake_redis):
+    respx.get("http://netbox.test/api/extras/tags/").mock(
+        return_value=Response(200, json=_page([{"id": 99, "slug": "halo-site"}])))
     respx.get("http://netbox.test/api/dcim/sites/").mock(return_value=Response(200, json=_page([])))
     post_call = respx.post("http://netbox.test/api/dcim/sites/").mock(
         return_value=Response(201, json={"id": 30, "name": "London", "slug": "london"}))
@@ -197,6 +199,7 @@ async def test_create_site_new(fake_redis):
     body = json.loads(post_call.calls[0].request.content)
     assert body["name"] == "London"
     assert body["slug"] == "london"
+    assert body["tags"] == [{"id": 99}]
     assert "tenant" not in body
 
 

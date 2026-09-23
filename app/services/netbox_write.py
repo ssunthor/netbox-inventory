@@ -20,6 +20,7 @@ DISCOVERY_TAG = {"name": "halo-discovered", "slug": "halo-discovered", "color": 
 UNASSIGNED_SITE = {"name": "Unassigned", "slug": "unassigned", "status": "active"}
 IMPORTED_ROLE = {"name": "Imported", "slug": "imported", "color": "2196f3"}
 IMPORT_TAG = {"name": "customer-imported", "slug": "customer-imported", "color": "2196f3"}
+CUSTOMER_SITE_TAG = {"name": "halo-site", "slug": "halo-site", "color": "4caf50"}
 
 
 def _headers() -> dict:
@@ -508,10 +509,25 @@ async def create_site(client: httpx.AsyncClient, data: dict) -> dict:
         await store.set_nbid(f"site:{slug}", site["id"])
         return {"id": site["id"], "slug": slug, "name": site["name"], "existed": True}
 
-    payload: dict = {"name": name, "slug": slug, "status": status}
+    tag_id = await _ensure(client, "tag:halo-site",
+                           "/api/extras/tags/?slug=halo-site",
+                           "/api/extras/tags/", CUSTOMER_SITE_TAG)
+    payload: dict = {"name": name, "slug": slug, "status": status,
+                     "tags": [{"id": tag_id}]}
     if description:
         payload["description"] = description
-    site = await _post(client, "/api/dcim/sites/", payload)
+    if data.get("physical_address"):
+        payload["physical_address"] = data["physical_address"]
+    try:
+        site = await _post(client, "/api/dcim/sites/", payload)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 400:
+            # Race condition: site was created between our GET check and POST.
+            retry = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+            if retry:
+                await store.set_nbid(f"site:{slug}", retry[0]["id"])
+                return {"id": retry[0]["id"], "slug": slug, "name": retry[0]["name"], "existed": True}
+        raise
     await store.set_nbid(f"site:{slug}", site["id"])
     logger.info("created site %r (id %d)", name, site["id"])
     return {"id": site["id"], "slug": slug, "name": site["name"], "existed": False}
@@ -528,6 +544,8 @@ async def update_site(client: httpx.AsyncClient, slug: str, updates: dict) -> di
         patch["status"] = updates["status"]
     if "description" in updates and updates["description"] is not None:
         patch["description"] = updates["description"]
+    if "physical_address" in updates and updates["physical_address"] is not None:
+        patch["physical_address"] = updates["physical_address"]
     if patch:
         site = await _patch(client, f"/api/dcim/sites/{site_id}/", patch)
     else:
@@ -619,3 +637,35 @@ async def update_prefix(client: httpx.AsyncClient, data: dict) -> dict:
     prefix = await _patch(client, f"/api/ipam/prefixes/{prefix_id}/", patch)
     logger.info("updated prefix %r (id %d)", prefix_cidr, prefix_id)
     return prefix
+
+
+async def list_sites(client: httpx.AsyncClient) -> list:
+    """Fetch customer-created sites (tagged halo-site) from the customer NetBox."""
+    raw = await _get_results(client, "/api/dcim/sites/?tag=halo-site&limit=0")
+    return [
+        {
+            "id": s["id"],
+            "name": s["name"],
+            "slug": s["slug"],
+            "status": s.get("status"),
+            "description": s.get("description") or "",
+            "physical_address": s.get("physical_address") or "",
+        }
+        for s in raw
+    ]
+
+
+async def list_device_roles(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/device-roles/?limit=0")
+
+
+async def list_manufacturers(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/manufacturers/?limit=0")
+
+
+async def list_platforms(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/platforms/?limit=0")
+
+
+async def list_device_types(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/device-types/?limit=200")

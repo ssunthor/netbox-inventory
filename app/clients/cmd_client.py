@@ -25,6 +25,33 @@ query GetSegmentASiteInfo($segmentId: Int!) {
 }
 """
 
+GET_SERVICE_ORDER_SITE_IDS_QUERY = """
+query GetServiceOrderSiteIds($orderId: Int!) {
+  service_order(where: {id: {_eq: $orderId}}) {
+    id
+    a_site_id
+  }
+}
+"""
+
+GET_CLIENT_SITE_ADDRESS_QUERY = """
+query GetClientSiteAddress($siteId: Int!) {
+  client_site(where: {id: {_eq: $siteId}}) {
+    id
+    address1
+    city
+    state
+    postal_code
+    country_id
+    country {
+      code
+      iso3
+      name
+    }
+  }
+}
+"""
+
 _access_token = None
 _token_expiry_time = 0.0
 
@@ -55,23 +82,49 @@ async def ping() -> bool:
     except httpx.HTTPError:
         return False
 
+async def _gql(client: httpx.AsyncClient, token: str, query: str, variables: dict) -> dict:
+    response = await client.post(
+        settings.CMD_API_URL,
+        json={"query": query, "variables": variables},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    response.raise_for_status()
+    data = response.json()
+    if "errors" in data:
+        raise ValueError(f"GraphQL Error: {data['errors'][0]['message']}")
+    return data.get("data", {})
+
+
 async def get_location_by_segment(segment_id: int) -> dict | None:
     if not settings.CMD_CLIENT_ID or not settings.CMD_CLIENT_SECRET:
         return None
 
     async with httpx.AsyncClient(timeout=30) as client:
         token = await _get_valid_token(client)
-        response = await client.post(
-            settings.CMD_API_URL,
-            json={"query": GET_SEGMENT_A_SITE_QUERY, "variables": {"segmentId": segment_id}},
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        response.raise_for_status()
-        response_data = response.json()
+        data = await _gql(client, token, GET_SEGMENT_A_SITE_QUERY, {"segmentId": segment_id})
 
-    if "errors" in response_data:
-        raise ValueError(f"GraphQL Error: {response_data['errors'][0]['message']}")
-
-    segments = response_data.get("data", {}).get("segment", [])
+    segments = data.get("segment", [])
     return segments[0] if segments else None
+
+
+async def get_location_by_gnid(gnid: int) -> dict | None:
+    """Two-step lookup: service_order(gnid) → a_site_id → client_site address."""
+    if not settings.CMD_CLIENT_ID or not settings.CMD_CLIENT_SECRET:
+        return None
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        token = await _get_valid_token(client)
+
+        order_data = await _gql(client, token, GET_SERVICE_ORDER_SITE_IDS_QUERY, {"orderId": gnid})
+        orders = order_data.get("service_order", [])
+        if not orders:
+            return None
+        a_site_id = orders[0].get("a_site_id")
+        if not a_site_id:
+            return None
+
+        site_data = await _gql(client, token, GET_CLIENT_SITE_ADDRESS_QUERY, {"siteId": a_site_id})
+
+    sites = site_data.get("client_site", [])
+    return sites[0] if sites else None
 
