@@ -21,6 +21,7 @@ UNASSIGNED_SITE = {"name": "Unassigned", "slug": "unassigned", "status": "active
 IMPORTED_ROLE = {"name": "Imported", "slug": "imported", "color": "2196f3"}
 IMPORT_TAG = {"name": "customer-imported", "slug": "customer-imported", "color": "2196f3"}
 CUSTOMER_SITE_TAG = {"name": "halo-site", "slug": "halo-site", "color": "4caf50"}
+MANAGED_SITE_TAG = {"name": "halo-managed", "slug": "halo-managed", "color": "2196f3"}
 
 
 def _headers() -> dict:
@@ -496,6 +497,49 @@ async def update_discovered_host(client: httpx.AsyncClient, device_id: int, upda
     return {"device_id": device_id, "name": device["name"]}
 
 
+async def upsert_gtt_site(client: httpx.AsyncClient,
+                          name: str, slug: str, physical_address: str) -> dict:
+    """Create or update a GTT/CMD-derived site in the customer NetBox.
+    Tagged halo-site (visible in list_sites) + halo-managed (read-only in UI).
+    Never overwrites a physical_address already set by the customer."""
+    await _ensure(client, "tag:halo-site",
+                  "/api/extras/tags/?slug=halo-site",
+                  "/api/extras/tags/", CUSTOMER_SITE_TAG)
+    await _ensure(client, "tag:halo-managed",
+                  "/api/extras/tags/?slug=halo-managed",
+                  "/api/extras/tags/", MANAGED_SITE_TAG)
+
+    results = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+    if results:
+        site = results[0]
+        site_id = site["id"]
+        await store.set_nbid(f"site:{slug}", site_id)
+        if physical_address and not (site.get("physical_address") or "").strip():
+            await _patch(client, f"/api/dcim/sites/{site_id}/",
+                         {"physical_address": physical_address})
+            logger.info("backfilled physical_address for GTT site %r", name)
+        return {"id": site_id, "slug": slug, "name": site["name"], "existed": True}
+
+    payload: dict = {
+        "name": name, "slug": slug, "status": "active",
+        "tags": [{"slug": "halo-site"}, {"slug": "halo-managed"}],
+    }
+    if physical_address:
+        payload["physical_address"] = physical_address
+    try:
+        site = await _post(client, "/api/dcim/sites/", payload)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 400:
+            retry = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+            if retry:
+                await store.set_nbid(f"site:{slug}", retry[0]["id"])
+                return {"id": retry[0]["id"], "slug": slug, "name": retry[0]["name"], "existed": True}
+        raise
+    await store.set_nbid(f"site:{slug}", site["id"])
+    logger.info("created GTT site %r (id %d)", name, site["id"])
+    return {"id": site["id"], "slug": slug, "name": site["name"], "existed": False}
+
+
 async def create_site(client: httpx.AsyncClient, data: dict) -> dict:
     """Create a site in the customer NetBox, deduplicating by slug."""
     name = data["name"].strip()
@@ -640,7 +684,8 @@ async def update_prefix(client: httpx.AsyncClient, data: dict) -> dict:
 
 
 async def list_sites(client: httpx.AsyncClient) -> list:
-    """Fetch customer-created sites (tagged halo-site) from the customer NetBox."""
+    """Fetch all halo-managed sites (halo-site tagged) from the customer NetBox.
+    is_customer_site=False for GTT-derived sites (also carry halo-managed tag)."""
     raw = await _get_results(client, "/api/dcim/sites/?tag=halo-site&limit=0")
     return [
         {
@@ -650,6 +695,9 @@ async def list_sites(client: httpx.AsyncClient) -> list:
             "status": s.get("status"),
             "description": s.get("description") or "",
             "physical_address": s.get("physical_address") or "",
+            "is_customer_site": not any(
+                t.get("slug") == "halo-managed" for t in (s.get("tags") or [])
+            ),
         }
         for s in raw
     ]

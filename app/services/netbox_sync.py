@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from app.config import settings
-from app.services import cve_monitoring, netbox, netbox_mirror, store
+from app.services import cve_monitoring, netbox, netbox_mirror, netbox_write, store
 
 logger = logging.getLogger("inventory.sync")
 
@@ -30,6 +30,21 @@ async def run_sync() -> dict:
             sites = await netbox.build_sites(hosts, prefixes, site_addresses)
             await store.save_sites(sites)
             result["site_count"] = len(sites)
+            if settings.MIRROR_ENABLED:
+                sites_with_address = [s for s in sites if s.get("address")]
+                upserted = failed = 0
+                async with netbox._client() as client:
+                    for s in sites_with_address:
+                        try:
+                            await netbox_write.upsert_gtt_site(
+                                client, s["site_name"], s["site"], s["address"])
+                            upserted += 1
+                        except Exception as exc:
+                            logger.warning("upsert_gtt_site %r failed: %s", s["site_name"], exc)
+                            failed += 1
+                result["gtt_sites_upserted"] = upserted
+                if failed:
+                    result["gtt_sites_failed"] = failed
         except Exception as exc:
             logger.warning("site build failed (keeping cached sites): %s", exc)
         if settings.MIRROR_ENABLED:
