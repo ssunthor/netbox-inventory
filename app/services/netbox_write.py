@@ -514,10 +514,24 @@ async def upsert_gtt_site(client: httpx.AsyncClient,
         site = results[0]
         site_id = site["id"]
         await store.set_nbid(f"site:{slug}", site_id)
+        existing_tag_slugs = {t.get("slug") for t in (site.get("tags") or [])}
+        patch: dict = {}
         if physical_address and not (site.get("physical_address") or "").strip():
-            await _patch(client, f"/api/dcim/sites/{site_id}/",
-                         {"physical_address": physical_address})
-            logger.info("backfilled physical_address for GTT site %r", name)
+            patch["physical_address"] = physical_address
+        missing_tags = []
+        if "halo-site" not in existing_tag_slugs:
+            missing_tags.append({"slug": "halo-site"})
+        if "halo-managed" not in existing_tag_slugs:
+            missing_tags.append({"slug": "halo-managed"})
+        if missing_tags:
+            patch["tags"] = [{"slug": t["slug"]} for t in (site.get("tags") or [])] + missing_tags
+        if patch:
+            await _patch(client, f"/api/dcim/sites/{site_id}/", patch)
+            if "physical_address" in patch:
+                logger.info("backfilled physical_address for GTT site %r", name)
+            if missing_tags:
+                logger.info("tagged GTT site %r with %s", name,
+                            ", ".join(t["slug"] for t in missing_tags))
         return {"id": site_id, "slug": slug, "name": site["name"], "existed": True}
 
     payload: dict = {
