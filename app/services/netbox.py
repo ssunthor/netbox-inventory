@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import ipaddress
 import logging
 import re
 
@@ -341,6 +342,63 @@ async def fetch_prefixes_from_customer() -> list:
     for entry in out:
         del entry["_plen"]
     return out
+
+
+def _prefixlen(entry: dict) -> int:
+    try:
+        return ipaddress.ip_network(entry["prefix"], strict=False).prefixlen
+    except (KeyError, ValueError):
+        return -1
+
+
+def host_networks(hosts: list) -> list:
+    """Prefix entries derived from the managed hosts themselves: each host's
+    own network - the CIDR NetBox attached to its address, so 7.41.252.65/30
+    labels 7.41.252.64/30 and a bare address labels its /32 - stamped with
+    the host's site. It is the same network the dashboard's Inventory
+    Networks tab groups hosts by. Labelling it here lets the Destinations
+    map resolve traffic to/from a managed host to its site even when no
+    IPAM prefix covers the address, which is the norm for public-addressed
+    sites. A network claimed by hosts at different sites is ambiguous, so
+    each of those hosts labels only its own address instead."""
+    claims: dict = {}  # network -> {site_name: [host addresses]}
+    for h in hosts:
+        site_name = h.get("site")
+        if not site_name:
+            continue
+        cidrs = h.get("cidrs") or {}
+        for ip in h.get("ips") or []:
+            try:
+                iface = ipaddress.ip_interface(cidrs.get(ip) or ip)
+            except ValueError:
+                continue
+            host_addr = f"{iface.ip}/{iface.ip.max_prefixlen}"
+            claims.setdefault(str(iface.network), {}).setdefault(site_name, []).append(host_addr)
+
+    def entry(prefix, name):
+        return {"prefix": prefix, "site": slugify(name), "site_name": name}
+
+    out: dict = {}
+    for network, sites in claims.items():
+        if len(sites) == 1:
+            (name,) = sites
+            out.setdefault(network, entry(network, name))
+        else:
+            for name, addrs in sites.items():
+                for addr in addrs:
+                    out.setdefault(addr, entry(addr, name))
+    return sorted(out.values(), key=_prefixlen, reverse=True)
+
+
+def merge_prefixes(*lists: list) -> list:
+    """Union of prefix lists keyed by prefix - an earlier list wins on the
+    same prefix, so IPAM prefixes take precedence over host-derived ones -
+    sorted longest-prefix first for longest-match lookups."""
+    merged: dict = {}
+    for entries in lists:
+        for p in entries:
+            merged.setdefault(p["prefix"], p)
+    return sorted(merged.values(), key=_prefixlen, reverse=True)
 
 
 async def build_sites(hosts: list, prefixes: list, site_addresses: dict) -> list:
