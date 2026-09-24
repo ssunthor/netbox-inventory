@@ -181,6 +181,10 @@ async def get_options():
             for dt in device_types
         ],
         "sites": sorted(s["name"] for s in all_sites),
+        "site_options": sorted(
+            [{"name": s["name"], "slug": s["slug"]} for s in all_sites],
+            key=lambda x: x["name"]
+        ),
     }
 
 
