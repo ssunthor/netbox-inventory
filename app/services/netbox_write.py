@@ -576,6 +576,10 @@ async def create_site(client: httpx.AsyncClient, data: dict) -> dict:
         payload["description"] = description
     if data.get("physical_address"):
         payload["physical_address"] = data["physical_address"]
+    if data.get("latitude") is not None:
+        payload["latitude"] = data["latitude"]
+    if data.get("longitude") is not None:
+        payload["longitude"] = data["longitude"]
     try:
         site = await _post(client, "/api/dcim/sites/", payload)
     except httpx.HTTPStatusError as exc:
@@ -604,6 +608,10 @@ async def update_site(client: httpx.AsyncClient, slug: str, updates: dict) -> di
         patch["description"] = updates["description"]
     if "physical_address" in updates and updates["physical_address"] is not None:
         patch["physical_address"] = updates["physical_address"]
+    if "latitude" in updates and updates["latitude"] is not None:
+        patch["latitude"] = updates["latitude"]
+    if "longitude" in updates and updates["longitude"] is not None:
+        patch["longitude"] = updates["longitude"]
     if patch:
         site = await _patch(client, f"/api/dcim/sites/{site_id}/", patch)
     else:
@@ -709,6 +717,8 @@ async def list_sites(client: httpx.AsyncClient) -> list:
             "status": s.get("status"),
             "description": s.get("description") or "",
             "physical_address": s.get("physical_address") or "",
+            "latitude": s.get("latitude"),
+            "longitude": s.get("longitude"),
             "is_customer_site": not any(
                 t.get("slug") == "halo-managed" for t in (s.get("tags") or [])
             ),
