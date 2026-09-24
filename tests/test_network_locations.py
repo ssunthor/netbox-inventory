@@ -77,14 +77,19 @@ async def test_build_sites_coordinates(fake_redis, monkeypatch):
     respx.get("http://netbox.test/api/dcim/sites/").mock(
         return_value=Response(200, json={"results": [
             {"name": "LON8", "latitude": 51.5, "longitude": -0.12},
+            # Not referenced by any host: listed (and geocoded) anyway
+            {"name": "PRG1", "slug": "prg1", "physical_address": "Na Prikope 1\nPrague"},
         ], "next": None}))
     respx.get("http://gtt.test/api/dcim/sites/").mock(
-        return_value=Response(200, json={"results": [], "next": None}))
+        return_value=Response(200, json={"results": [
+            # GT-T sites are enrich-only: an unreferenced one is never listed
+            {"name": "OTHER-CUSTOMER", "latitude": 1.0, "longitude": 1.0},
+        ], "next": None}))
     geo_route = respx.get("http://geo.test/search").mock(
         return_value=Response(200, json=[{"lat": "32.77", "lon": "-96.79"}]))
 
     hosts = [{"site": "ACME-US-TXDAL-MAIN"}, {"site": "LON8"}]
-    prefixes = [{"prefix": "10.0.0.0/8", "site": "lon8", "site_name": "LON8"}]
+    prefixes = [{"prefix": "10.0.0.0/8", "site": "cst", "site_name": "CST"}]
     site_addresses = {"ACME-US-TXDAL-MAIN": "100 Main St, Dallas, TX, 75201"}
 
     sites = {s["site_name"]: s for s in
@@ -93,8 +98,15 @@ async def test_build_sites_coordinates(fake_redis, monkeypatch):
     assert sites["LON8"]["latitude"] == 51.5  # DCIM coordinates win, no geocode
     dal = sites["ACME-US-TXDAL-MAIN"]
     assert (dal["latitude"], dal["longitude"]) == (32.77, -96.79)  # geocoded
-    assert geo_route.calls[0].request.url.params["q"] == "100 Main St, Dallas, TX, 75201"
+    queried = {c.request.url.params["q"] for c in geo_route.calls}
+    assert queried == {"100 Main St, Dallas, TX, 75201", "Na Prikope 1, Prague"}
+    prg = sites["PRG1"]
+    assert prg["site"] == "prg1" and prg["latitude"] == 32.77  # customer DCIM site, geocoded
+    assert "OTHER-CUSTOMER" not in sites
+    # Prefix owners are catalogued too (no coordinates until a DCIM record or address exists)
+    assert set(sites) == {"LON8", "ACME-US-TXDAL-MAIN", "PRG1", "CST"}
+    assert sites["CST"]["site"] == "cst" and sites["CST"]["latitude"] is None
 
     # Second build hits the inv:geocode cache, not the geocoder
     await netbox.build_sites(hosts, prefixes, site_addresses)
-    assert len(geo_route.calls) == 1
+    assert len(geo_route.calls) == 2

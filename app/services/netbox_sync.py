@@ -16,7 +16,10 @@ async def run_sync() -> dict:
     On any failure the last-good snapshot is left untouched."""
     try:
         hosts, site_addresses = await netbox.fetch_managed_hosts_from_gtt()
-        prefixes = await netbox.fetch_prefixes_from_customer()
+        # IPAM prefixes first (they win on the same CIDR), then each managed
+        # host's own network labelled with its site - see netbox.host_networks.
+        prefixes = netbox.merge_prefixes(await netbox.fetch_prefixes_from_customer(),
+                                         netbox.host_networks(hosts))
         ip_index, name_index = netbox.build_indexes(hosts)
         version = await store.save_snapshot(hosts, ip_index, name_index, prefixes)
         logger.info("sync ok: %d hosts, %d prefixes, version %d",

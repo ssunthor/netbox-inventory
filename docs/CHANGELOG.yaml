@@ -10,6 +10,19 @@
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
 ---
+- version: '0.1.6'
+  date: '2026-09-24'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Each managed host''s own network (the CIDR NetBox attached to its address, or its /32) is now labelled with the host''s site in the served prefix list, so the Destinations map resolves traffic to and from a managed host to its site even when no IPAM prefix covers the address.'
+        - 'The site coordinate catalogue (inv:sites) now lists every customer DCIM site and geocodes their physical addresses, so sites shown on the Inventory Sites tab can be plotted.'
+    - category: '🧹 Refactoring & Chores'
+      items:
+        - 'IPAM prefixes take precedence over host-derived networks on the same CIDR; a network claimed by hosts at different sites labels only those hosts'' addresses.'
+
+
 - version: '0.1.5'
   date: '2026-09-10'
   author: 'Scott Chrestman'

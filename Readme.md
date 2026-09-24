@@ -28,9 +28,18 @@ sync and reconciles it with what telemetry actually sees.
 - **Network locations** — manual subnet→site labels saved from the
   dashboard's Destinations page. Stored in Redis (`inv:prefixes:manual`) so
   they survive syncs, and merged over the NetBox-synced prefix list in every
-  served payload (a manual label wins on the same prefix). Each sync also
-  rebuilds a site list (`inv:sites`) with best-effort coordinates for map
-  plotting: a DCIM site record's own latitude/longitude when set, otherwise
+  served payload (a manual label wins on the same prefix). That synced list
+  is the customer NetBox IPAM prefixes plus each managed host's own network
+  (the CIDR NetBox attached to its address, or its /32) labelled with the
+  host's site - the same networks the dashboard's Inventory Networks tab
+  groups by - so traffic to or from a managed host resolves to its site even
+  when no IPAM prefix covers the address. Each sync also
+  rebuilds a site coordinate catalogue (`inv:sites`) - every site name seen
+  in managed hosts, prefix owners, manual labels, and the customer DCIM
+  sites - with best-effort coordinates. The dashboard decides which sites
+  to plot (those on its Inventory Sites tab) and looks coordinates up here
+  by name or slug. Coordinates are a DCIM site record's own
+  latitude/longitude when set, otherwise
   the site's street address geocoded through a Nominatim-compatible endpoint
   (`GEOCODE_URL`, cached permanently in `inv:geocode`; disable with
   `GEOCODE_ENABLED=false` for air-gapped deployments).
