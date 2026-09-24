@@ -163,11 +163,12 @@ async def get_options():
     platforms, and device types. All four NetBox calls run in parallel."""
     async with httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL) as client:
         try:
-            roles, manufacturers, platforms, device_types = await asyncio.gather(
+            roles, manufacturers, platforms, device_types, all_sites = await asyncio.gather(
                 netbox_write.list_device_roles(client),
                 netbox_write.list_manufacturers(client),
                 netbox_write.list_platforms(client),
                 netbox_write.list_device_types(client),
+                netbox_write.list_all_sites(client),
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc))
@@ -179,6 +180,7 @@ async def get_options():
             {"name": dt["model"], "manufacturer": (dt.get("manufacturer") or {}).get("slug", "")}
             for dt in device_types
         ],
+        "sites": sorted(s["name"] for s in all_sites),
     }
 
 

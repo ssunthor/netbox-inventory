@@ -727,6 +727,12 @@ async def list_sites(client: httpx.AsyncClient) -> list:
     ]
 
 
+async def list_all_sites(client: httpx.AsyncClient) -> list:
+    """All sites from customer NetBox (no tag filter) — used for dropdown options."""
+    raw = await _get_results(client, "/api/dcim/sites/?limit=0")
+    return [{"name": s["name"], "slug": s["slug"]} for s in raw]
+
+
 async def list_device_roles(client: httpx.AsyncClient) -> list:
     return await _get_results(client, "/api/dcim/device-roles/?limit=0")
 
