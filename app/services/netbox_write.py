@@ -514,10 +514,24 @@ async def upsert_gtt_site(client: httpx.AsyncClient,
         site = results[0]
         site_id = site["id"]
         await store.set_nbid(f"site:{slug}", site_id)
+        existing_tag_slugs = {t.get("slug") for t in (site.get("tags") or [])}
+        patch: dict = {}
         if physical_address and not (site.get("physical_address") or "").strip():
-            await _patch(client, f"/api/dcim/sites/{site_id}/",
-                         {"physical_address": physical_address})
-            logger.info("backfilled physical_address for GTT site %r", name)
+            patch["physical_address"] = physical_address
+        missing_tags = []
+        if "halo-site" not in existing_tag_slugs:
+            missing_tags.append({"slug": "halo-site"})
+        if "halo-managed" not in existing_tag_slugs:
+            missing_tags.append({"slug": "halo-managed"})
+        if missing_tags:
+            patch["tags"] = [{"slug": t["slug"]} for t in (site.get("tags") or [])] + missing_tags
+        if patch:
+            await _patch(client, f"/api/dcim/sites/{site_id}/", patch)
+            if "physical_address" in patch:
+                logger.info("backfilled physical_address for GTT site %r", name)
+            if missing_tags:
+                logger.info("tagged GTT site %r with %s", name,
+                            ", ".join(t["slug"] for t in missing_tags))
         return {"id": site_id, "slug": slug, "name": site["name"], "existed": True}
 
     payload: dict = {
@@ -562,6 +576,10 @@ async def create_site(client: httpx.AsyncClient, data: dict) -> dict:
         payload["description"] = description
     if data.get("physical_address"):
         payload["physical_address"] = data["physical_address"]
+    if data.get("latitude") is not None:
+        payload["latitude"] = data["latitude"]
+    if data.get("longitude") is not None:
+        payload["longitude"] = data["longitude"]
     try:
         site = await _post(client, "/api/dcim/sites/", payload)
     except httpx.HTTPStatusError as exc:
@@ -590,6 +608,10 @@ async def update_site(client: httpx.AsyncClient, slug: str, updates: dict) -> di
         patch["description"] = updates["description"]
     if "physical_address" in updates and updates["physical_address"] is not None:
         patch["physical_address"] = updates["physical_address"]
+    if "latitude" in updates and updates["latitude"] is not None:
+        patch["latitude"] = updates["latitude"]
+    if "longitude" in updates and updates["longitude"] is not None:
+        patch["longitude"] = updates["longitude"]
     if patch:
         site = await _patch(client, f"/api/dcim/sites/{site_id}/", patch)
     else:
@@ -695,12 +717,20 @@ async def list_sites(client: httpx.AsyncClient) -> list:
             "status": s.get("status"),
             "description": s.get("description") or "",
             "physical_address": s.get("physical_address") or "",
+            "latitude": s.get("latitude"),
+            "longitude": s.get("longitude"),
             "is_customer_site": not any(
                 t.get("slug") == "halo-managed" for t in (s.get("tags") or [])
             ),
         }
         for s in raw
     ]
+
+
+async def list_all_sites(client: httpx.AsyncClient) -> list:
+    """All sites from customer NetBox (no tag filter) — used for dropdown options."""
+    raw = await _get_results(client, "/api/dcim/sites/?limit=0")
+    return [{"name": s["name"], "slug": s["slug"]} for s in raw]
 
 
 async def list_device_roles(client: httpx.AsyncClient) -> list:

@@ -82,12 +82,16 @@ class SiteCreate(BaseModel):
     status: str = "active"
     description: str | None = None
     physical_address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 class SiteUpdate(BaseModel):
     status: str | None = None
     description: str | None = None
     physical_address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 class HostCreate(BaseModel):
