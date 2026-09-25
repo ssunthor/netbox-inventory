@@ -10,6 +10,14 @@
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
 ---
+- version: '0.2.0'
+  date: '2026-09-25'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Implemented prioritized ordering for inventory roles to ensure core device types appear first in the options list.'
+
 - version: '0.1.9'
   date: '2026-09-24'
   author: 'Franklin Zhang'
