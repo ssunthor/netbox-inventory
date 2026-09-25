@@ -190,6 +190,56 @@ async def get_options():
     }
 
 
+@router.post("/cleanup-sites")
+async def cleanup_sites():
+    """Delete all halo-site tagged sites that have no devices, then clear the
+    location and site-id caches so the next sync rebuilds them correctly."""
+    async with httpx.AsyncClient(timeout=60, verify=settings.NETBOX_VERIFY_SSL) as client:
+        try:
+            sites = await netbox_write._get_results(client, "/api/dcim/sites/?tag=halo-site&limit=0")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+
+    deleted, skipped = [], []
+    async with httpx.AsyncClient(timeout=60, verify=settings.NETBOX_VERIFY_SSL) as client:
+        for site in sites:
+            site_id = site["id"]
+            site_name = site["name"]
+            try:
+                devices = await netbox_write._get_results(client, f"/api/dcim/devices/?site_id={site_id}&limit=1")
+                vms = await netbox_write._get_results(client, f"/api/virtualization/virtual-machines/?site_id={site_id}&limit=1")
+                if devices or vms:
+                    skipped.append(site_name)
+                    continue
+                resp = await client.delete(
+                    f"{settings.NETBOX_URL}/api/dcim/sites/{site_id}/",
+                    headers={"Authorization": f"Token {settings.NETBOX_TOKEN}"},
+                )
+                if resp.status_code == 204:
+                    deleted.append(site_name)
+                else:
+                    skipped.append(f"{site_name} (HTTP {resp.status_code})")
+            except Exception as exc:
+                skipped.append(f"{site_name} ({exc})")
+
+    from app.clients.redis_client import redis
+    location_keys = [k async for k in redis.scan_iter("inv:location:*")]
+    if location_keys:
+        await redis.delete(*location_keys)
+
+    nbids = await redis.hgetall("inv:nbids")
+    site_nbid_keys = [k for k in nbids if k.startswith("site:")]
+    if site_nbid_keys:
+        await redis.hdel("inv:nbids", *site_nbid_keys)
+
+    return {
+        "deleted_sites": deleted,
+        "skipped_sites": skipped,
+        "location_cache_cleared": len(location_keys),
+        "site_nbids_cleared": len(site_nbid_keys),
+    }
+
+
 @router.get("/sites")
 async def list_sites():
     """All sites in the customer NetBox."""
