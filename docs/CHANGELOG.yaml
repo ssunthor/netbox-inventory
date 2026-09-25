@@ -10,6 +10,14 @@
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
 ---
+- version: '1.0.0'
+  date: '2026-09-25'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Official HALO MVP 1.0.0 Release.'
+
 - version: '0.2.0'
   date: '2026-09-25'
   author: 'Franklin Zhang'
