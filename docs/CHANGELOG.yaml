@@ -10,6 +10,25 @@
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
 ---
+- version: '1.0.2'
+  date: '2026-09-25'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '✨ New Features & Enhancements'
+      items:
+        - 'Introduced a site cleanup API endpoint to remove empty halo-site tagged sites and refresh associated Redis location caches.'
+        - 'Enhanced site address formatting and naming logic to support dynamic country codes, replacing the hardcoded US default.'
+
+
+- version: '1.0.1'
+  date: '2026-09-25'
+  author: 'Scott Chrestman'
+  changes:
+    - category: '🚀 Architecture & Infrastructure'
+      items:
+        - 'Optimized container build performance by refining Kaniko snapshotting and caching strategies.'
+        - 'Enhanced pipeline resilience by increasing Kubernetes ephemeral storage limits and security analyzer timeouts.'
+
 - version: '1.0.0'
   date: '2026-09-25'
   author: 'Scott Chrestman'
