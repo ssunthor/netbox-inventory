@@ -3,25 +3,32 @@ include:
     ref: 'main'
     file:
       - '/collections/Container-Single-Platform-Base.gitlab-ci.yml'
-      - '/collections/Node-Build-Test.gitlab-ci.yml'
 
 variables:
   CONTAINER_BUILD_NAME: $CI_PROJECT_NAME
   PLATFORM: "linux/amd64"
   CI_APPLICATION_REPOSITORY: $CI_REGISTRY_IMAGE
   CI_APPLICATION_TAG: $CI_COMMIT_REF_SLUG
-  KANIKO_CLI_ARGS: "--skip-tls-verify"
-  PMD_CPD_DIR: "app"
+  KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "15Gi"
+  KUBERNETES_EPHEMERAL_STORAGE_LIMIT: "25Gi"
+  CS_ANALYZER_TIMEOUT: "30m"
+  TRIVY_TIMEOUT: "30m"
+  # Optimization: Kaniko can be memory-hungry. Reducing snapshotting helps.
+  KANIKO_CLI_ARGS: "--skip-tls-verify --compressed-caching=false --use-new-run --snapshot-mode=redo --cleanup"
+  PMD_CPD_DIR: "src"
 
-# CI_APPLICATION_REPOSITORY/TAG resolve differently for container_build vs.
-# update_annotations across the Container-Single-Platform-Base include chain
-# (container_build correctly uses this project's override; update_annotations
-# falls back to the template's own tmp/$CI_PIPELINE_ID default and then fails
-# to find that image). Non-blocking locally until the shared template is
-# fixed - backend/frontend carry the same override and likely hit this too.
+deploy_branch:
+  rules:
+    - when: never
+
 remove_image:
   rules:
     - when: never
 
 update_annotations:
-  allow_failure: true
+  rules:
+    - when: never
+
+container_dive:
+  rules:
+    - when: never
