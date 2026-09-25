@@ -49,6 +49,18 @@ query GetClientSiteAddress($siteId: Int!) {
 }
 """
 
+GET_CLIENT_SITE_ADDRESS_QUERY_NO_COUNTRY = """
+query GetClientSiteAddressNoCountry($siteId: Int!) {
+  client_site(where: {id: {_eq: $siteId}}) {
+    id
+    address1
+    city
+    state
+    postal_code
+  }
+}
+"""
+
 _access_token = None
 _token_expiry_time = 0.0
 
@@ -120,7 +132,11 @@ async def get_location_by_gnid(gnid: int) -> dict | None:
         if not a_site_id:
             return None
 
-        site_data = await _gql(client, token, GET_CLIENT_SITE_ADDRESS_QUERY, {"siteId": a_site_id})
+        try:
+            site_data = await _gql(client, token, GET_CLIENT_SITE_ADDRESS_QUERY, {"siteId": a_site_id})
+        except ValueError:
+            # older CMD environments (e.g. preprod) don't expose country relation
+            site_data = await _gql(client, token, GET_CLIENT_SITE_ADDRESS_QUERY_NO_COUNTRY, {"siteId": a_site_id})
 
     sites = site_data.get("client_site", [])
     return sites[0] if sites else None
