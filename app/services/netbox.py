@@ -113,9 +113,10 @@ def _normalize_vm(v: dict) -> dict:
 
 
 def _format_site_address(location: dict) -> str | None:
-    # client_site uses address1/city/state/postal_code
+    # client_site uses address1/city/state/postal_code/country_code
+    country_code = (location.get("country") or {}).get("code")
     parts = [location.get("address1"), location.get("city"),
-             location.get("state"), location.get("postal_code")]
+             location.get("state"), location.get("postal_code"), country_code]
     parts = [p for p in parts if p]
     return ", ".join(parts) if parts else None
 
@@ -164,6 +165,7 @@ def _compute_site_name(address_str: str) -> dict:
     city = parts[1] if len(parts) > 1 else ""
     state = parts[2] if len(parts) > 2 else ""
     postal = parts[3] if len(parts) > 3 else ""
+    country = parts[4].upper() if len(parts) > 4 and parts[4].strip() else "US"
 
     normalized = ", ".join(p.lower() for p in [address, city, state, postal] if p)
     normalized = re.sub(r"[^a-z0-9, ]", "", normalized)
@@ -174,7 +176,7 @@ def _compute_site_name(address_str: str) -> dict:
     street_token = re.sub(r"\b(rd|st|ave|blvd|dr|ln)\b", "", street_rest, flags=re.I)
     street_token = re.sub(r"[^A-Za-z]", "", street_token).upper()
     customer_prefix = settings.NETBOX_CUSTOMER_NAME.upper() if settings.NETBOX_CUSTOMER_NAME else "CUSTOMER"
-    display_name = f"{customer_prefix}-US-{state}{city_abbrev}-{street_token}"
+    display_name = f"{customer_prefix}-{country}-{state}{city_abbrev}-{street_token}"
 
     return {"site_id": site_id, "display_name": display_name}
 
