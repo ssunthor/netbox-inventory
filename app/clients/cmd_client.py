@@ -42,6 +42,9 @@ query GetClientSiteAddress($siteId: Int!) {
     city
     state
     postal_code
+    country {
+      code
+    }
   }
 }
 """
