@@ -10,6 +10,14 @@
 # - "🧹 Refactoring & Chores"
 # ---------------------------------------------------------------------------
 ---
+- version: '1.0.3'
+  date: '2026-09-25'
+  author: 'Franklin Zhang'
+  changes:
+    - category: '🐛 Bug Fixes & Resilience'
+      items:
+        - 'Implemented a fallback mechanism for site address queries to ensure compatibility with older CMD environments that do not expose country relations.'
+
 - version: '1.0.2'
   date: '2026-09-25'
   author: 'Franklin Zhang'
