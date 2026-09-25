@@ -172,8 +172,10 @@ async def get_options():
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc))
+    static_roles = ["Router", "Firewall", "Switch", "Server"]
+    netbox_role_names = [r["name"] for r in roles if r["name"] not in static_roles]
     return {
-        "roles": sorted(r["name"] for r in roles),
+        "roles": static_roles + sorted(netbox_role_names),
         "manufacturers": sorted(m["name"] for m in manufacturers),
         "platforms": sorted(p["name"] for p in platforms),
         "device_types": [
