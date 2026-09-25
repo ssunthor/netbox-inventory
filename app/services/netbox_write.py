@@ -9,7 +9,7 @@ import httpx
 
 from app.config import settings
 from app.services import classify, store
-from app.services.netbox import _slugify
+from app.services.netbox import slugify
 
 logger = logging.getLogger("inventory.netbox_write")
 
@@ -18,6 +18,10 @@ UNKNOWN_MANUFACTURER = {"name": "Unknown", "slug": "unknown"}
 UNKNOWN_DEVICE_TYPE = {"model": "Unknown", "slug": "unknown"}
 DISCOVERY_TAG = {"name": "halo-discovered", "slug": "halo-discovered", "color": "ff9800"}
 UNASSIGNED_SITE = {"name": "Unassigned", "slug": "unassigned", "status": "active"}
+IMPORTED_ROLE = {"name": "Imported", "slug": "imported", "color": "2196f3"}
+IMPORT_TAG = {"name": "customer-imported", "slug": "customer-imported", "color": "2196f3"}
+CUSTOMER_SITE_TAG = {"name": "halo-site", "slug": "halo-site", "color": "4caf50"}
+MANAGED_SITE_TAG = {"name": "halo-managed", "slug": "halo-managed", "color": "2196f3"}
 
 
 def _headers() -> dict:
@@ -79,7 +83,7 @@ async def _resolve_tenant_id(client: httpx.AsyncClient) -> int:
     transfer between NetBox instances — NETBOX_TENANT_ID belongs to the
     GT-T instance's scoping and must never be assumed to exist locally."""
     name = settings.NETBOX_CUSTOMER_NAME
-    slug = _slugify(name)
+    slug = slugify(name)
     cached = await store.get_nbid(f"tenant:{slug}")
     if cached:
         return cached
@@ -97,7 +101,7 @@ async def _resolve_tenant_id(client: httpx.AsyncClient) -> int:
             if exc.response.status_code != 400 or b"group" not in exc.response.content:
                 raise
             group_name = settings.NETBOX_TENANT_GROUP
-            group_slug = _slugify(group_name)
+            group_slug = slugify(group_name)
             group_id = await _ensure(
                 client, f"tenantgroup:{group_slug}",
                 f"/api/tenancy/tenant-groups/?slug={group_slug}",
@@ -204,3 +208,542 @@ async def register_discovered_host(client: httpx.AsyncClient,
     logger.info("registered discovered host %s as device %d (%s)",
                 ip, device_id, device_payload["name"])
     return {"device_id": device_id, "name": device_payload["name"]}
+
+
+async def import_customer_host(client: httpx.AsyncClient, row: dict, prefixes: list) -> dict:
+    """Create one CSV-import row as a real NetBox device. Mirrors
+    register_discovered_host's sequence, but tagged/rated distinctly
+    (customer-imported vs halo-discovered) since these come from a manual
+    CSV, not telemetry, and the customer may name an explicit site/
+    manufacturer/model rather than leaving them to Unknown/Unassigned.
+    Returns {"status": "created"|"skipped", ...}. Also records the host in
+    store's inv:imported registry so it can be listed/edited/deleted later
+    without a live NetBox round-trip."""
+    ip = row["ip"]
+    name = row["name"]
+
+    existing_ips = await _get_results(client, f"/api/ipam/ip-addresses/?address={ip}")
+    ip_obj = existing_ips[0] if existing_ips else None
+    if ip_obj and ip_obj.get("assigned_object_id"):
+        return {"status": "skipped", "reason": "ip already assigned in NetBox", "ip": ip, "name": name}
+
+    role_name = row.get("role")
+    if role_name:
+        role_slug = slugify(role_name)
+        role_id = await _ensure(client, f"role:{role_slug}",
+                                f"/api/dcim/device-roles/?slug={role_slug}",
+                                "/api/dcim/device-roles/",
+                                {"name": role_name, "slug": role_slug, "color": IMPORTED_ROLE["color"]})
+    else:
+        role_id = await _ensure(client, "role:imported",
+                                "/api/dcim/device-roles/?slug=imported",
+                                "/api/dcim/device-roles/", IMPORTED_ROLE)
+
+    mfr_name = row.get("manufacturer")
+    if mfr_name:
+        mfr_slug = slugify(mfr_name)
+        mfr_id = await _ensure(client, f"manufacturer:{mfr_slug}",
+                               f"/api/dcim/manufacturers/?slug={mfr_slug}",
+                               "/api/dcim/manufacturers/", {"name": mfr_name, "slug": mfr_slug})
+    else:
+        mfr_id = await _ensure(client, "manufacturer:unknown",
+                               "/api/dcim/manufacturers/?slug=unknown",
+                               "/api/dcim/manufacturers/", UNKNOWN_MANUFACTURER)
+
+    model_name = row.get("model")
+    if model_name:
+        model_slug = slugify(model_name)
+        type_id = await _ensure(client, f"devicetype:{model_slug}",
+                                f"/api/dcim/device-types/?slug={model_slug}",
+                                "/api/dcim/device-types/",
+                                {"model": model_name, "slug": model_slug, "manufacturer": mfr_id})
+    else:
+        type_id = await _ensure(client, "devicetype:unknown",
+                                "/api/dcim/device-types/?slug=unknown",
+                                "/api/dcim/device-types/",
+                                {**UNKNOWN_DEVICE_TYPE, "manufacturer": mfr_id})
+
+    await _ensure(client, "tag:customer-imported",
+                 "/api/extras/tags/?slug=customer-imported",
+                 "/api/extras/tags/", IMPORT_TAG)
+
+    site_name = row.get("site")
+    if site_name:
+        site_slug = slugify(site_name)
+        site_id = await _ensure(client, f"site:{site_slug}",
+                                f"/api/dcim/sites/?slug={site_slug}",
+                                "/api/dcim/sites/", {"name": site_name, "slug": site_slug, "status": "active"})
+    else:
+        site_id = await _resolve_site_id(client, ip, prefixes)
+    tenant_id = await _resolve_tenant_id(client)
+
+    device_payload = {
+        "name": name,
+        "role": role_id,
+        "device_type": type_id,
+        "site": site_id,
+        "status": "active",
+        "tenant": tenant_id,
+        "tags": [{"name": IMPORT_TAG["name"], "slug": IMPORT_TAG["slug"]}],
+        "comments": f"Bulk-imported via CSV on {time.strftime('%Y-%m-%d', time.gmtime())}.",
+    }
+    try:
+        device = await _post(client, "/api/dcim/devices/", device_payload)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 400 and b"name" in exc.response.content:
+            device_payload["name"] = f"{name}-{ip}"
+            device = await _post(client, "/api/dcim/devices/", device_payload)
+        else:
+            raise
+    device_id = device["id"]
+
+    interface = await _post(client, "/api/dcim/interfaces/",
+                            {"device": device_id, "name": "eth0", "type": "other"})
+    if ip_obj:
+        ip_obj = await _patch(client, f"/api/ipam/ip-addresses/{ip_obj['id']}/",
+                              {"assigned_object_type": "dcim.interface",
+                               "assigned_object_id": interface["id"]})
+    else:
+        ip_obj = await _post(client, "/api/ipam/ip-addresses/",
+                             {"address": f"{ip}/32", "status": "active",
+                              "tenant": tenant_id,
+                              "assigned_object_type": "dcim.interface",
+                              "assigned_object_id": interface["id"]})
+    await _patch(client, f"/api/dcim/devices/{device_id}/", {"primary_ip4": ip_obj["id"]})
+
+    logger.info("imported host %s as device %d (%s)", ip, device_id, device_payload["name"])
+    await store.mark_imported(ip, device_id, device_payload["name"], row)
+    return {"status": "created", "device_id": device_id, "name": device_payload["name"], "ip": ip}
+
+
+async def _verify_imported_device(client: httpx.AsyncClient, device_id: int) -> dict:
+    """Fetch a device and confirm it carries the customer-imported tag -
+    the safety guard so update/delete of "imported" hosts can never touch a
+    GTT-managed or auto-discovered device. Raises ValueError if not found or
+    not tagged; callers should turn that into a 404."""
+    resp = await client.get(_url(f"/api/dcim/devices/{device_id}/"), headers=_headers())
+    if resp.status_code == 404:
+        raise ValueError(f"device {device_id} not found")
+    _check(resp)
+    device = resp.json()
+    tags = {t.get("slug") for t in (device.get("tags") or [])}
+    if IMPORT_TAG["slug"] not in tags:
+        raise ValueError(f"device {device_id} is not a customer-imported host")
+    return device
+
+
+async def update_imported_host(client: httpx.AsyncClient, device_id: int, updates: dict) -> dict:
+    """Update an existing CSV-imported device's name/site/role/manufacturer/
+    model. IP reassignment is out of scope - editing the primary IP would
+    mean re-homing the NetBox interface/IP object, more moving parts than
+    the fixed CSV columns need for v1."""
+    device = await _verify_imported_device(client, device_id)
+    patch: dict = {}
+
+    if "name" in updates and updates["name"]:
+        patch["name"] = updates["name"]
+
+    if "role" in updates and updates["role"]:
+        role_slug = slugify(updates["role"])
+        patch["role"] = await _ensure(client, f"role:{role_slug}",
+                                      f"/api/dcim/device-roles/?slug={role_slug}",
+                                      "/api/dcim/device-roles/",
+                                      {"name": updates["role"], "slug": role_slug, "color": IMPORTED_ROLE["color"]})
+
+    if "site" in updates and updates["site"]:
+        site_slug = slugify(updates["site"])
+        patch["site"] = await _ensure(client, f"site:{site_slug}",
+                                      f"/api/dcim/sites/?slug={site_slug}",
+                                      "/api/dcim/sites/",
+                                      {"name": updates["site"], "slug": site_slug, "status": "active"})
+
+    if updates.get("manufacturer") or updates.get("model"):
+        current_type = device.get("device_type") or {}
+        mfr_name = updates.get("manufacturer") or (current_type.get("manufacturer") or {}).get("name")
+        model_name = updates.get("model") or current_type.get("model")
+        mfr_slug = slugify(mfr_name) if mfr_name else "unknown"
+        mfr_id = await _ensure(client, f"manufacturer:{mfr_slug}",
+                               f"/api/dcim/manufacturers/?slug={mfr_slug}",
+                               "/api/dcim/manufacturers/",
+                               {"name": mfr_name or "Unknown", "slug": mfr_slug})
+        model_slug = slugify(model_name) if model_name else "unknown"
+        patch["device_type"] = await _ensure(client, f"devicetype:{model_slug}",
+                                             f"/api/dcim/device-types/?slug={model_slug}",
+                                             "/api/dcim/device-types/",
+                                             {"model": model_name or "Unknown", "slug": model_slug,
+                                              "manufacturer": mfr_id})
+
+    if "platform" in updates and updates["platform"]:
+        platform_slug = slugify(updates["platform"])
+        patch["platform"] = await _ensure(client, f"platform:{platform_slug}",
+                                          f"/api/dcim/platforms/?slug={platform_slug}",
+                                          "/api/dcim/platforms/",
+                                          {"name": updates["platform"], "slug": platform_slug})
+
+    if "os_version" in updates and updates["os_version"]:
+        # os_version is stored as a NetBox custom field (os_build for DCIM devices).
+        patch.setdefault("custom_fields", {})["os_build"] = updates["os_version"]
+
+    if patch:
+        device = await _patch(client, f"/api/dcim/devices/{device_id}/", patch)
+
+    # Keep the local registry in sync so listing doesn't need a live NetBox call.
+    old = await store.get_imported_by_device_id(device_id)
+    if old:
+        ip = old["ip"]
+        merged = {**old, **{k: v for k, v in updates.items() if v}, "name": device["name"]}
+        await store.mark_imported(ip, device_id, device["name"], merged)
+
+    logger.info("updated imported host device %d", device_id)
+    return {"device_id": device_id, "name": device["name"]}
+
+
+async def overwrite_imported_host(client: httpx.AsyncClient, device_id: int, row: dict) -> dict:
+    """CSV-import overwrite path: a row whose IP matched a previously
+    imported device updates that device's fields instead of being skipped.
+    Delegates the actual patch to update_imported_host - same tag guard,
+    same field-by-field update logic, just reshaped into an import result."""
+    result = await update_imported_host(client, device_id, row)
+    return {"status": "updated", "device_id": device_id, "name": result["name"], "ip": row["ip"]}
+
+
+async def delete_imported_host(client: httpx.AsyncClient, device_id: int) -> None:
+    """Delete a CSV-imported device (and drop it from the local registry).
+    Guarded the same way as update: refuses anything not tagged
+    customer-imported."""
+    await _verify_imported_device(client, device_id)
+    resp = await client.delete(_url(f"/api/dcim/devices/{device_id}/"), headers=_headers())
+    if resp.status_code not in (204, 404):
+        _check(resp)
+
+    old = await store.get_imported_by_device_id(device_id)
+    if old:
+        await store.delete_imported(old["ip"])
+    # Drop any cve-monitoring off-list entry so a future device reusing this
+    # id doesn't inherit a stale "off" state.
+    await store.set_cve_monitoring([f"imported:{device_id}"], True)
+    logger.info("deleted imported host device %d", device_id)
+
+
+async def _verify_discovered_device(client: httpx.AsyncClient, device_id: int) -> dict:
+    """Fetch a device and confirm it carries the halo-discovered tag so that
+    update never touches a GTT-managed or customer-imported device."""
+    resp = await client.get(_url(f"/api/dcim/devices/{device_id}/"), headers=_headers())
+    if resp.status_code == 404:
+        raise ValueError(f"device {device_id} not found")
+    _check(resp)
+    device = resp.json()
+    tags = {t.get("slug") for t in (device.get("tags") or [])}
+    if DISCOVERY_TAG["slug"] not in tags:
+        raise ValueError(f"device {device_id} is not a halo-discovered host")
+    return device
+
+
+async def update_discovered_host(client: httpx.AsyncClient, device_id: int, updates: dict) -> dict:
+    """Update a halo-discovered device's metadata in the customer NetBox.
+    Same field set as update_imported_host; guarded by the halo-discovered tag."""
+    device = await _verify_discovered_device(client, device_id)
+    patch: dict = {}
+
+    if "name" in updates and updates["name"]:
+        patch["name"] = updates["name"]
+
+    if "role" in updates and updates["role"]:
+        role_slug = slugify(updates["role"])
+        patch["role"] = await _ensure(client, f"role:{role_slug}",
+                                      f"/api/dcim/device-roles/?slug={role_slug}",
+                                      "/api/dcim/device-roles/",
+                                      {"name": updates["role"], "slug": role_slug,
+                                       "color": DISCOVERED_ROLE["color"]})
+
+    if "site" in updates and updates["site"]:
+        site_slug = slugify(updates["site"])
+        patch["site"] = await _ensure(client, f"site:{site_slug}",
+                                      f"/api/dcim/sites/?slug={site_slug}",
+                                      "/api/dcim/sites/",
+                                      {"name": updates["site"], "slug": site_slug,
+                                       "status": "active"})
+
+    if updates.get("manufacturer") or updates.get("model"):
+        current_type = device.get("device_type") or {}
+        mfr_name = updates.get("manufacturer") or (current_type.get("manufacturer") or {}).get("name")
+        model_name = updates.get("model") or current_type.get("model")
+        mfr_slug = slugify(mfr_name) if mfr_name else "unknown"
+        mfr_id = await _ensure(client, f"manufacturer:{mfr_slug}",
+                               f"/api/dcim/manufacturers/?slug={mfr_slug}",
+                               "/api/dcim/manufacturers/",
+                               {"name": mfr_name or "Unknown", "slug": mfr_slug})
+        model_slug = slugify(model_name) if model_name else "unknown"
+        patch["device_type"] = await _ensure(client, f"devicetype:{model_slug}",
+                                             f"/api/dcim/device-types/?slug={model_slug}",
+                                             "/api/dcim/device-types/",
+                                             {"model": model_name or "Unknown",
+                                              "slug": model_slug, "manufacturer": mfr_id})
+
+    if "platform" in updates and updates["platform"]:
+        platform_slug = slugify(updates["platform"])
+        patch["platform"] = await _ensure(client, f"platform:{platform_slug}",
+                                          f"/api/dcim/platforms/?slug={platform_slug}",
+                                          "/api/dcim/platforms/",
+                                          {"name": updates["platform"], "slug": platform_slug})
+
+    if "os_version" in updates and updates["os_version"]:
+        patch.setdefault("custom_fields", {})["os_build"] = updates["os_version"]
+
+    if patch:
+        device = await _patch(client, f"/api/dcim/devices/{device_id}/", patch)
+
+    logger.info("updated discovered host device %d", device_id)
+    return {"device_id": device_id, "name": device["name"]}
+
+
+async def upsert_gtt_site(client: httpx.AsyncClient,
+                          name: str, slug: str, physical_address: str) -> dict:
+    """Create or update a GTT/CMD-derived site in the customer NetBox.
+    Tagged halo-site (visible in list_sites) + halo-managed (read-only in UI).
+    Never overwrites a physical_address already set by the customer."""
+    await _ensure(client, "tag:halo-site",
+                  "/api/extras/tags/?slug=halo-site",
+                  "/api/extras/tags/", CUSTOMER_SITE_TAG)
+    await _ensure(client, "tag:halo-managed",
+                  "/api/extras/tags/?slug=halo-managed",
+                  "/api/extras/tags/", MANAGED_SITE_TAG)
+
+    results = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+    if results:
+        site = results[0]
+        site_id = site["id"]
+        await store.set_nbid(f"site:{slug}", site_id)
+        existing_tag_slugs = {t.get("slug") for t in (site.get("tags") or [])}
+        patch: dict = {}
+        if physical_address and not (site.get("physical_address") or "").strip():
+            patch["physical_address"] = physical_address
+        missing_tags = []
+        if "halo-site" not in existing_tag_slugs:
+            missing_tags.append({"slug": "halo-site"})
+        if "halo-managed" not in existing_tag_slugs:
+            missing_tags.append({"slug": "halo-managed"})
+        if missing_tags:
+            patch["tags"] = [{"slug": t["slug"]} for t in (site.get("tags") or [])] + missing_tags
+        if patch:
+            await _patch(client, f"/api/dcim/sites/{site_id}/", patch)
+            if "physical_address" in patch:
+                logger.info("backfilled physical_address for GTT site %r", name)
+            if missing_tags:
+                logger.info("tagged GTT site %r with %s", name,
+                            ", ".join(t["slug"] for t in missing_tags))
+        return {"id": site_id, "slug": slug, "name": site["name"], "existed": True}
+
+    payload: dict = {
+        "name": name, "slug": slug, "status": "active",
+        "tags": [{"slug": "halo-site"}, {"slug": "halo-managed"}],
+    }
+    if physical_address:
+        payload["physical_address"] = physical_address
+    try:
+        site = await _post(client, "/api/dcim/sites/", payload)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 400:
+            retry = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+            if retry:
+                await store.set_nbid(f"site:{slug}", retry[0]["id"])
+                return {"id": retry[0]["id"], "slug": slug, "name": retry[0]["name"], "existed": True}
+        raise
+    await store.set_nbid(f"site:{slug}", site["id"])
+    logger.info("created GTT site %r (id %d)", name, site["id"])
+    return {"id": site["id"], "slug": slug, "name": site["name"], "existed": False}
+
+
+async def create_site(client: httpx.AsyncClient, data: dict) -> dict:
+    """Create a site in the customer NetBox, deduplicating by slug."""
+    name = data["name"].strip()
+    slug = slugify(name)
+    status = data.get("status") or "active"
+    description = data.get("description") or ""
+
+    results = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+    if results:
+        site = results[0]
+        await store.set_nbid(f"site:{slug}", site["id"])
+        return {"id": site["id"], "slug": slug, "name": site["name"], "existed": True}
+
+    tag_id = await _ensure(client, "tag:halo-site",
+                           "/api/extras/tags/?slug=halo-site",
+                           "/api/extras/tags/", CUSTOMER_SITE_TAG)
+    payload: dict = {"name": name, "slug": slug, "status": status,
+                     "tags": [{"id": tag_id}]}
+    if description:
+        payload["description"] = description
+    if data.get("physical_address"):
+        payload["physical_address"] = data["physical_address"]
+    if data.get("latitude") is not None:
+        payload["latitude"] = data["latitude"]
+    if data.get("longitude") is not None:
+        payload["longitude"] = data["longitude"]
+    try:
+        site = await _post(client, "/api/dcim/sites/", payload)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 400:
+            # Race condition: site was created between our GET check and POST.
+            retry = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+            if retry:
+                await store.set_nbid(f"site:{slug}", retry[0]["id"])
+                return {"id": retry[0]["id"], "slug": slug, "name": retry[0]["name"], "existed": True}
+        raise
+    await store.set_nbid(f"site:{slug}", site["id"])
+    logger.info("created site %r (id %d)", name, site["id"])
+    return {"id": site["id"], "slug": slug, "name": site["name"], "existed": False}
+
+
+async def update_site(client: httpx.AsyncClient, slug: str, updates: dict) -> dict:
+    """Patch an existing site by slug. Raises ValueError if not found."""
+    results = await _get_results(client, f"/api/dcim/sites/?slug={slug}")
+    if not results:
+        raise ValueError(f"site with slug {slug!r} not found")
+    site_id = results[0]["id"]
+    patch: dict = {}
+    if "status" in updates and updates["status"]:
+        patch["status"] = updates["status"]
+    if "description" in updates and updates["description"] is not None:
+        patch["description"] = updates["description"]
+    if "physical_address" in updates and updates["physical_address"] is not None:
+        patch["physical_address"] = updates["physical_address"]
+    if "latitude" in updates and updates["latitude"] is not None:
+        patch["latitude"] = updates["latitude"]
+    if "longitude" in updates and updates["longitude"] is not None:
+        patch["longitude"] = updates["longitude"]
+    if patch:
+        site = await _patch(client, f"/api/dcim/sites/{site_id}/", patch)
+    else:
+        site = results[0]
+    logger.info("updated site %r (id %d)", slug, site_id)
+    return {"id": site_id, "slug": slug, "name": site["name"]}
+
+
+async def delete_discovered_host(client: httpx.AsyncClient, ip: str) -> dict:
+    """Delete a learned (telemetry-discovered) host: the auto-registered
+    NetBox device when one exists, plus the local sighting/registration
+    tracking. Two guards: a GTT-managed IP is refused outright
+    (PermissionError -> 409 upstream), and a NetBox device is only ever
+    deleted when it still carries the halo-discovered tag - a registration
+    record pointing at a re-purposed or manually-retagged device leaves the
+    NetBox object alone and only clears our tracking."""
+    ip_index = await store.get_ip_index()
+    registration = await store.get_registered(ip)
+    # mark_registered() adds auto-registered hosts to ip_index too, so the
+    # managed test must exclude anything we registered ourselves.
+    if ip in ip_index and not registration:
+        raise PermissionError(f"{ip} is a GTT-managed host and cannot be deleted")
+
+    deleted_device_id = None
+    device_id = (registration or {}).get("device_id")
+    if device_id:
+        resp = await client.get(_url(f"/api/dcim/devices/{device_id}/"), headers=_headers())
+        if resp.status_code != 404:
+            _check(resp)
+            tags = {t.get("slug") for t in (resp.json().get("tags") or [])}
+            if DISCOVERY_TAG["slug"] in tags:
+                dresp = await client.delete(
+                    _url(f"/api/dcim/devices/{device_id}/"), headers=_headers())
+                if dresp.status_code not in (204, 404):
+                    _check(dresp)
+                deleted_device_id = device_id
+            else:
+                logger.warning(
+                    "registered device %d for %s no longer carries the %s tag; "
+                    "leaving the NetBox record in place", device_id, ip,
+                    DISCOVERY_TAG["slug"])
+
+    await store.delete_registered(ip)
+    await store.delete_sighting(ip)
+    logger.info("deleted discovered host %s (netbox device: %s)",
+                ip, deleted_device_id or "none")
+    return {"ip": ip, "netbox_device_deleted": deleted_device_id}
+
+
+async def create_prefix(client: httpx.AsyncClient, data: dict) -> dict:
+    """Create a prefix in the customer NetBox IPAM."""
+    payload: dict = {"prefix": data["prefix"], "status": data.get("status") or "active"}
+    if data.get("description"):
+        payload["description"] = data["description"]
+    if data.get("site_slug"):
+        slug = data["site_slug"]
+        site_id = await _ensure(client, f"site:{slug}",
+                                f"/api/dcim/sites/?slug={slug}",
+                                "/api/dcim/sites/",
+                                {"name": slug, "slug": slug, "status": "active"})
+        payload["site"] = site_id
+    prefix = await _post(client, "/api/ipam/prefixes/", payload)
+    logger.info("created prefix %r (id %d)", data["prefix"], prefix["id"])
+    return prefix
+
+
+async def update_prefix(client: httpx.AsyncClient, data: dict) -> dict:
+    """Update an existing prefix in the customer NetBox IPAM by CIDR.
+    Raises ValueError if the prefix is not found."""
+    prefix_cidr = data["prefix"]
+    results = await _get_results(client, f"/api/ipam/prefixes/?prefix={prefix_cidr}")
+    if not results:
+        raise ValueError(f"prefix {prefix_cidr!r} not found in NetBox")
+    prefix_id = results[0]["id"]
+    patch: dict = {}
+    if data.get("status"):
+        patch["status"] = data["status"]
+    if data.get("description") is not None:
+        patch["description"] = data["description"]
+    if data.get("site_slug"):
+        slug = data["site_slug"]
+        site_id = await _ensure(client, f"site:{slug}",
+                                f"/api/dcim/sites/?slug={slug}",
+                                "/api/dcim/sites/",
+                                {"name": slug, "slug": slug, "status": "active"})
+        patch["site"] = site_id
+    if not patch:
+        return results[0]
+    prefix = await _patch(client, f"/api/ipam/prefixes/{prefix_id}/", patch)
+    logger.info("updated prefix %r (id %d)", prefix_cidr, prefix_id)
+    return prefix
+
+
+async def list_sites(client: httpx.AsyncClient) -> list:
+    """Fetch all halo-managed sites (halo-site tagged) from the customer NetBox.
+    is_customer_site=False for GTT-derived sites (also carry halo-managed tag)."""
+    raw = await _get_results(client, "/api/dcim/sites/?tag=halo-site&limit=0")
+    return [
+        {
+            "id": s["id"],
+            "name": s["name"],
+            "slug": s["slug"],
+            "status": s.get("status"),
+            "description": s.get("description") or "",
+            "physical_address": s.get("physical_address") or "",
+            "latitude": s.get("latitude"),
+            "longitude": s.get("longitude"),
+            "is_customer_site": not any(
+                t.get("slug") == "halo-managed" for t in (s.get("tags") or [])
+            ),
+        }
+        for s in raw
+    ]
+
+
+async def list_all_sites(client: httpx.AsyncClient) -> list:
+    """All sites from customer NetBox (no tag filter) — used for dropdown options."""
+    raw = await _get_results(client, "/api/dcim/sites/?limit=0")
+    return [{"name": s["name"], "slug": s["slug"]} for s in raw]
+
+
+async def list_device_roles(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/device-roles/?limit=0")
+
+
+async def list_manufacturers(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/manufacturers/?limit=0")
+
+
+async def list_platforms(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/platforms/?limit=0")
+
+
+async def list_device_types(client: httpx.AsyncClient) -> list:
+    return await _get_results(client, "/api/dcim/device-types/?limit=200")

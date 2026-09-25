@@ -9,5 +9,26 @@ variables:
   PLATFORM: "linux/amd64"
   CI_APPLICATION_REPOSITORY: $CI_REGISTRY_IMAGE
   CI_APPLICATION_TAG: $CI_COMMIT_REF_SLUG
-  KANIKO_CLI_ARGS: "--skip-tls-verify"
-  PMD_CPD_DIR: "app"
+  KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "15Gi"
+  KUBERNETES_EPHEMERAL_STORAGE_LIMIT: "25Gi"
+  CS_ANALYZER_TIMEOUT: "30m"
+  TRIVY_TIMEOUT: "30m"
+  # Optimization: Kaniko can be memory-hungry. Reducing snapshotting helps.
+  KANIKO_CLI_ARGS: "--skip-tls-verify --compressed-caching=false --use-new-run --snapshot-mode=redo --cleanup"
+  PMD_CPD_DIR: "src"
+
+deploy_branch:
+  rules:
+    - when: never
+
+remove_image:
+  rules:
+    - when: never
+
+update_annotations:
+  rules:
+    - when: never
+
+container_dive:
+  rules:
+    - when: never

@@ -1,8 +1,21 @@
+import asyncio
+import hashlib
+import ipaddress
+import logging
 import re
 
 import httpx
 
+from app.clients import cmd_client
 from app.config import settings
+from app.services import geocode, store
+
+logger = logging.getLogger("inventory.netbox")
+
+# CMD custom field format is "{gnid}-{segment_id}"; gnid is the leading int.
+CMD_GNID_PATTERN = re.compile(r"^(\d+)")
+# Placeholder site name NetBox falls back to when no real location is set.
+NETBOX_GENERIC_SITE_NAME = "CST"
 
 
 def _headers(token: str) -> dict:
@@ -99,6 +112,86 @@ def _normalize_vm(v: dict) -> dict:
     }
 
 
+def _format_site_address(location: dict) -> str | None:
+    # client_site uses address1/city/state/postal_code
+    parts = [location.get("address1"), location.get("city"),
+             location.get("state"), location.get("postal_code")]
+    parts = [p for p in parts if p]
+    return ", ".join(parts) if parts else None
+
+
+async def _resolve_host_location(host: dict, raw: dict, semaphore: asyncio.Semaphore) -> None:
+    """Fill host["site"] with a real address from CMD when NetBox only has a
+    real location or the generic placeholder site to go on."""
+    if host.get("location"):
+        return
+    if host.get("site") and host["site"] != NETBOX_GENERIC_SITE_NAME:
+        return
+
+    slid = (raw.get("custom_fields") or {}).get("cmd_slid")
+    if not slid:
+        return
+    match = CMD_GNID_PATTERN.match(str(slid))
+    if not match:
+        return
+    gnid = match.group(1)
+
+    async with semaphore:
+        cached = await store.get_location(gnid)
+        if cached:
+            host["site"] = cached
+            return
+
+        try:
+            location = await cmd_client.get_location_by_gnid(int(gnid))
+        except (httpx.HTTPError, ValueError):
+            return
+    if not location:
+        return
+    address = _format_site_address(location)
+    if not address:
+        return
+    await store.set_location(gnid, address)
+    host["site"] = address
+
+
+def _compute_site_name(address_str: str) -> dict:
+    """Derives a stable site_id (hash) and short display_name from a resolved
+    CMD address. Neither NetBox nor CMD has a "site" concept of its own -
+    port of halo-dev-statrb's netbox_sync_worker.py compute_site()."""
+    parts = [p.strip() for p in (address_str or "").split(",")]
+    address = parts[0] if len(parts) > 0 else ""
+    city = parts[1] if len(parts) > 1 else ""
+    state = parts[2] if len(parts) > 2 else ""
+    postal = parts[3] if len(parts) > 3 else ""
+
+    normalized = ", ".join(p.lower() for p in [address, city, state, postal] if p)
+    normalized = re.sub(r"[^a-z0-9, ]", "", normalized)
+    site_id = hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+    city_abbrev = re.sub(r"[^A-Za-z]", "", city).upper()[:3]
+    street_rest = address.split(" ", 1)[1] if " " in address else address
+    street_token = re.sub(r"\b(rd|st|ave|blvd|dr|ln)\b", "", street_rest, flags=re.I)
+    street_token = re.sub(r"[^A-Za-z]", "", street_token).upper()
+    customer_prefix = settings.NETBOX_CUSTOMER_NAME.upper() if settings.NETBOX_CUSTOMER_NAME else "CUSTOMER"
+    display_name = f"{customer_prefix}-US-{state}{city_abbrev}-{street_token}"
+
+    return {"site_id": site_id, "display_name": display_name}
+
+
+def _disambiguate_site_names(items: list) -> None:
+    """Appends -{site_id[:6]} (in place) to any display_name shared by more
+    than one entry - address-derived names can collide (e.g. two streets
+    abbreviating the same way). Only touches names that actually collide."""
+    by_name: dict = {}
+    for item in items:
+        by_name.setdefault(item["display_name"], []).append(item)
+    for group in by_name.values():
+        if len(group) > 1:
+            for item in group:
+                item["display_name"] = f"{item['display_name']}-{item['site_id'][:6]}"
+
+
 def _client(**kwargs) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=30, verify=settings.NETBOX_VERIFY_SSL, **kwargs)
 
@@ -114,26 +207,50 @@ async def fetch_all_hosts() -> list:
     return [_normalize_device(d) for d in devices] + [_normalize_vm(v) for v in vms]
 
 
-async def fetch_managed_hosts_from_gtt() -> list:
+async def _fetch_ips_by_ids(client: httpx.AsyncClient, base: str, token: str,
+                             param_name: str, ids: list, chunk_size: int = 100) -> list:
+    """IP-addresses assigned to any of the given device/VM ids, chunked to
+    keep query strings reasonable. Filters by id rather than tenant_id -
+    an IP's own tenant tag is frequently missing or wrong (tagged to
+    "gtt-unsorted" or even a different customer entirely) even when it's
+    genuinely assigned to one of our devices, which silently dropped it
+    when this filtered on tenant_id directly."""
+    results = []
+    for i in range(0, len(ids), chunk_size):
+        chunk = ids[i:i + chunk_size]
+        qs = "&".join(f"{param_name}={id_}" for id_ in chunk)
+        results.extend(await _fetch_all(client, base, token, f"/api/ipam/ip-addresses/?{qs}&limit=0"))
+    return results
+
+
+async def fetch_managed_hosts_from_gtt() -> tuple[list, dict]:
     """The managed-host record of truth, pulled from the GT-T NetBox.
     Attaches every interface-assigned IP (not just primary) so the backend
-    can match telemetry hosts seen on any address."""
+    can match telemetry hosts seen on any address.
+
+    Returns (hosts, site_addresses) where site_addresses maps each computed
+    site display name to the CMD street address it was derived from - the
+    only geocodable handle those synthetic sites have (see build_sites)."""
     base, token = settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN
     qp = settings.GTT_NETBOX_QUERY_PARAMS
-    ip_qp = "limit=0"
     tenant_id = settings.GTT_NETBOX_TENANT_ID or settings.NETBOX_TENANT_ID
     if tenant_id:
         qp = f"tenant_id={tenant_id}&{qp}"
-        # Scopes to IPs tenanted in NetBox; untenanted interface IPs are
-        # missed here but primary IPs still arrive via the device records.
-        ip_qp = f"tenant_id={tenant_id}&{ip_qp}"
     async with _client() as client:
         devices = await _fetch_all(client, base, token, f"/api/dcim/devices/?{qp}")
         vms = await _fetch_all(client, base, token, f"/api/virtualization/virtual-machines/?{qp}")
-        ip_addrs = await _fetch_all(client, base, token, f"/api/ipam/ip-addresses/?{ip_qp}")
+        ip_addrs = []
+        if devices:
+            ip_addrs += await _fetch_ips_by_ids(client, base, token, "device_id",
+                                                 [d["id"] for d in devices])
+        if vms:
+            ip_addrs += await _fetch_ips_by_ids(client, base, token, "virtual_machine_id",
+                                                 [v["id"] for v in vms])
 
     hosts = [_normalize_device(d) for d in devices] + [_normalize_vm(v) for v in vms]
     by_key = {h["host_id"]: h for h in hosts}
+    raw_by_key = {f"device:{d.get('id')}": d for d in devices}
+    raw_by_key.update({f"vm:{v.get('id')}": v for v in vms})
     for ip in ip_addrs:
         addr = _bare_ip(ip.get("address"))
         if not addr:
@@ -151,7 +268,26 @@ async def fetch_managed_hosts_from_gtt() -> list:
             if addr not in host["ips"]:
                 host["ips"].append(addr)
             host["cidrs"].setdefault(addr, ip["address"])
-    return hosts
+
+    semaphore = asyncio.Semaphore(10)
+    await asyncio.gather(*(
+        _resolve_host_location(h, raw_by_key.get(h["host_id"], {}), semaphore)
+        for h in hosts
+    ))
+
+    # _resolve_host_location writes the raw CMD address (always
+    # "addr, city, state, zip") into host["site"] on success; replace it with
+    # our short computed name. Disambiguation needs the full batch, so this
+    # runs as a second pass after every host is resolved, not inline above.
+    computed = [{**_compute_site_name(h["site"]), "host": h, "address": h["site"]}
+                for h in hosts if h.get("site") and "," in h["site"]]
+    _disambiguate_site_names(computed)
+    site_addresses = {}
+    for c in computed:
+        c["host"]["site"] = c["display_name"]
+        site_addresses[c["display_name"]] = c["address"]
+
+    return hosts, site_addresses
 
 
 def build_indexes(hosts: list) -> tuple[dict, dict]:
@@ -171,7 +307,7 @@ def build_indexes(hosts: list) -> tuple[dict, dict]:
     return ip_index, name_index
 
 
-def _slugify(text: str) -> str:
+def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
@@ -198,7 +334,7 @@ async def fetch_prefixes_from_customer() -> list:
             continue
         out.append({
             "prefix": prefix,
-            "site": src.get("slug") or _slugify(name),
+            "site": src.get("slug") or slugify(name),
             "site_name": name,
             "_plen": plen,
         })
@@ -206,3 +342,131 @@ async def fetch_prefixes_from_customer() -> list:
     for entry in out:
         del entry["_plen"]
     return out
+
+
+def _prefixlen(entry: dict) -> int:
+    try:
+        return ipaddress.ip_network(entry["prefix"], strict=False).prefixlen
+    except (KeyError, ValueError):
+        return -1
+
+
+def host_networks(hosts: list) -> list:
+    """Prefix entries derived from the managed hosts themselves: each host's
+    own network - the CIDR NetBox attached to its address, so 7.41.252.65/30
+    labels 7.41.252.64/30 and a bare address labels its /32 - stamped with
+    the host's site. It is the same network the dashboard's Inventory
+    Networks tab groups hosts by. Labelling it here lets the Destinations
+    map resolve traffic to/from a managed host to its site even when no
+    IPAM prefix covers the address, which is the norm for public-addressed
+    sites. A network claimed by hosts at different sites is ambiguous, so
+    each of those hosts labels only its own address instead."""
+    claims: dict = {}  # network -> {site_name: [host addresses]}
+    for h in hosts:
+        site_name = h.get("site")
+        if not site_name:
+            continue
+        cidrs = h.get("cidrs") or {}
+        for ip in h.get("ips") or []:
+            try:
+                iface = ipaddress.ip_interface(cidrs.get(ip) or ip)
+            except ValueError:
+                continue
+            host_addr = f"{iface.ip}/{iface.ip.max_prefixlen}"
+            claims.setdefault(str(iface.network), {}).setdefault(site_name, []).append(host_addr)
+
+    def entry(prefix, name):
+        return {"prefix": prefix, "site": slugify(name), "site_name": name}
+
+    out: dict = {}
+    for network, sites in claims.items():
+        if len(sites) == 1:
+            (name,) = sites
+            out.setdefault(network, entry(network, name))
+        else:
+            for name, addrs in sites.items():
+                for addr in addrs:
+                    out.setdefault(addr, entry(addr, name))
+    return sorted(out.values(), key=_prefixlen, reverse=True)
+
+
+def merge_prefixes(*lists: list) -> list:
+    """Union of prefix lists keyed by prefix - an earlier list wins on the
+    same prefix, so IPAM prefixes take precedence over host-derived ones -
+    sorted longest-prefix first for longest-match lookups."""
+    merged: dict = {}
+    for entries in lists:
+        for p in entries:
+            merged.setdefault(p["prefix"], p)
+    return sorted(merged.values(), key=_prefixlen, reverse=True)
+
+
+async def build_sites(hosts: list, prefixes: list, site_addresses: dict) -> list:
+    """Coordinate catalogue for the dashboard's Destinations map: one entry
+    per site name seen anywhere (managed hosts' sites, prefix owners, manual
+    subnet labels, every customer DCIM site), with best-effort coordinates.
+    A real DCIM site record's own latitude/longitude wins; otherwise the
+    site's street address (the CMD address a computed site was derived from,
+    or the DCIM physical_address) is geocoded. Entries with neither keep null
+    coordinates.
+
+    This list does not decide what the map shows. The dashboard plots the
+    sites its Inventory Sites tab shows and looks their coordinates up here
+    by name or slug, so being broad costs nothing and lets any of those
+    sites be placed."""
+    sites: dict = {}
+
+    def add(name, slug=None, address=None):
+        if not name:
+            return
+        entry = sites.setdefault(name, {
+            "site": slug or slugify(name), "site_name": name,
+            "latitude": None, "longitude": None, "address": None,
+        })
+        if address and not entry["address"]:
+            entry["address"] = address
+
+    for h in hosts:
+        add(h.get("site"), address=site_addresses.get(h.get("site")))
+    for p in prefixes:
+        add(p.get("site_name"), slug=p.get("site"))
+    for m in await store.get_manual_prefixes():
+        add(m.get("site_name"), slug=m.get("site"))
+
+    # Real DCIM site records may carry coordinates, or at least an address
+    # worth geocoding. Every customer NetBox site is catalogued; the GT-T
+    # NetBox only enriches names already present, since it holds every
+    # customer's sites.
+    for base, token, include_all in ((settings.NETBOX_URL, settings.NETBOX_TOKEN, True),
+                                     (settings.GTT_NETBOX_URL, settings.GTT_NETBOX_TOKEN, False)):
+        try:
+            async with _client() as client:
+                records = await _fetch_all(client, base, token, "/api/dcim/sites/?limit=0")
+        except Exception as exc:
+            logger.warning("DCIM site fetch failed for %s (skipping): %s", base, exc)
+            continue
+        for rec in records:
+            entry = sites.get(rec.get("name"))
+            if not entry and include_all:
+                add(rec.get("name"), slug=rec.get("slug"))
+                entry = sites.get(rec.get("name"))
+            if not entry:
+                continue
+            if rec.get("latitude") is not None and rec.get("longitude") is not None:
+                try:
+                    entry["latitude"] = float(rec["latitude"])
+                    entry["longitude"] = float(rec["longitude"])
+                except (TypeError, ValueError):
+                    pass
+            elif rec.get("physical_address") and not entry["address"]:
+                entry["address"] = rec["physical_address"].replace("\n", ", ")
+
+    pending = [e["address"] for e in sites.values()
+               if e["latitude"] is None and e["address"]]
+    coords = await geocode.resolve(pending)
+    for entry in sites.values():
+        if entry["latitude"] is None and entry["address"] in coords:
+            entry["latitude"] = coords[entry["address"]]["latitude"]
+            entry["longitude"] = coords[entry["address"]]["longitude"]
+
+    return sorted(sites.values(), key=lambda e: e["site_name"].lower())
